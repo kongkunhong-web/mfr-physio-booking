@@ -15,6 +15,29 @@ npm run dev
 npm run build
 ```
 
+## Deploy
+
+Oracle 上請先切換 Node 24：
+
+```bash
+cd /home/ubuntu/projects/mfr-physio-booking
+source ~/.nvm/nvm.sh
+nvm use
+```
+
+若使用 Cloudflare API token：
+
+```bash
+export CLOUDFLARE_API_TOKEN="..."
+npm run deploy
+```
+
+部署後在 Cloudflare Pages 綁定自訂網域：
+
+```text
+mfr.09071247.xyz
+```
+
 ## Demo 帳戶
 
 - 身份證：`6661`
