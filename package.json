@@ -5,8 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "dev:cf": "npx wrangler@latest pages dev dist --d1 DB=9703c246-cef0-4df3-b96f-9ab9ae278f23",
     "build": "tsc -b && vite build",
     "deploy": "npm run build && npx wrangler@latest pages deploy dist --project-name mfr-physio-booking --branch master --commit-dirty=true",
+    "db:migrate:local": "npx wrangler@latest d1 migrations apply mfr_physio_booking --local",
+    "db:migrate:remote": "npx wrangler@latest d1 migrations apply mfr_physio_booking --remote",
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
@@ -15,6 +18,7 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260706.1",
     "@vitejs/plugin-react": "^4.3.4",
     "@types/react": "^19.0.1",
     "@types/react-dom": "^19.0.2",

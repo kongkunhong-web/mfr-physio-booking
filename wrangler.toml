@@ -1,3 +1,8 @@
 name = "mfr-physio-booking"
 pages_build_output_dir = "dist"
-compatibility_date = "2026-07-02"
+compatibility_date = "2026-07-06"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mfr_physio_booking"
+database_id = "9703c246-cef0-4df3-b96f-9ab9ae278f23"
