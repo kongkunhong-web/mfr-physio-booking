@@ -797,7 +797,8 @@ function buildCalendarStats({
 
   const dailyStats = monthDaysList(month).map((date) => {
     const weekday = weekdayNumber(date);
-    const isWeekend = ![2, 3, 4, 5].includes(weekday);
+    const isWeekend = [6, 7].includes(weekday);
+    const isReserved = weekday === 1;
     const dayBlocks = unavailable.filter((block) => date >= block.start_date && date <= block.end_date);
     const unavailableReasons = dayBlocks.map((block) => ({
       therapistId: block.therapist_id,
@@ -811,7 +812,7 @@ function buildCalendarStats({
     let blockedCapacity = 0;
     const vacancyTimes: Array<{ therapistId: string; therapistName: string; time: string; remaining: number; capacity: number; booked: number }> = [];
 
-    if (!isWeekend) {
+    if (!isWeekend && !isReserved) {
       for (const therapist of therapists) {
         const times = capacityTimesForService(capacities, therapist.service_area, weekday);
         for (const time of times) {
@@ -835,7 +836,9 @@ function buildCalendarStats({
     const remaining = Math.max(capacityTotal - booked, 0);
     const status = isWeekend
       ? "weekend"
-      : capacityTotal === 0 && unavailableReasons.length
+      : isReserved
+        ? "reserved"
+        : capacityTotal === 0 && unavailableReasons.length
         ? "unavailable"
         : capacityTotal === 0
           ? "no-capacity"
@@ -849,6 +852,7 @@ function buildCalendarStats({
       date,
       weekday,
       isWeekend,
+      isReserved,
       capacityTotal,
       booked,
       remaining,
@@ -868,8 +872,9 @@ function buildCalendarStats({
       unavailableDays: summary.unavailableDays + (day.unavailableReasons.length ? 1 : 0),
       fullDays: summary.fullDays + (day.status === "full" ? 1 : 0),
       weekendDays: summary.weekendDays + (day.isWeekend ? 1 : 0),
+      reservedDays: summary.reservedDays + (day.isReserved ? 1 : 0),
     }),
-    { capacityTotal: 0, booked: 0, remaining: 0, blockedCapacity: 0, unavailableDays: 0, fullDays: 0, weekendDays: 0 },
+    { capacityTotal: 0, booked: 0, remaining: 0, blockedCapacity: 0, unavailableDays: 0, fullDays: 0, weekendDays: 0, reservedDays: 0 },
   );
 
   return { dailyStats, monthSummary };

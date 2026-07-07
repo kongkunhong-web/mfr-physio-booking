@@ -124,11 +124,12 @@ type CalendarDayStat = {
   date: string;
   weekday: number;
   isWeekend: boolean;
+  isReserved?: boolean;
   capacityTotal: number;
   booked: number;
   remaining: number;
   blockedCapacity: number;
-  status: "weekend" | "unavailable" | "no-capacity" | "full" | "partial" | "available";
+  status: "weekend" | "reserved" | "unavailable" | "no-capacity" | "full" | "partial" | "available";
   unavailableReasons: Array<Record<string, any>>;
   vacancyTimes: Array<Record<string, any>>;
 };
@@ -1066,6 +1067,7 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
   const [calendar, setCalendar] = useState<AdminCalendarData | null>(null);
   const [selectedDate, setSelectedDate] = useState("");
   const [capacity, setCapacity] = useState({ therapist_id: "", service_area: "ELE" as ServiceArea, subtype: "ELE-1", weekday: 2, time: "08:30", capacity: 1 });
+  const [unavailableForm, setUnavailableForm] = useState(() => emptyUnavailableForm(data.therapists[0]?.id ?? "", month));
   const [move, setMove] = useState({ appointmentId: "", therapistId: "", date: "", time: "" });
   const [moveTimes, setMoveTimes] = useState<Array<Record<string, any>>>([]);
 
@@ -1079,6 +1081,10 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
 
   useEffect(() => {
     loadCalendar().catch(() => null);
+  }, [therapistId, month]);
+
+  useEffect(() => {
+    setUnavailableForm(emptyUnavailableForm(therapistId, month));
   }, [therapistId, month]);
 
   useEffect(() => {
@@ -1105,6 +1111,59 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
     await loadCalendar();
   }
 
+  async function saveUnavailable(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!therapistId) {
+      setNotice("請先選擇一位治療師，才可新增不可預約時段。");
+      return;
+    }
+    if (!unavailableForm.start_date || !unavailableForm.reason.trim()) {
+      setNotice("請輸入日期及不可預約原因。");
+      return;
+    }
+    if (!unavailableForm.all_day && (!unavailableForm.start_time || !unavailableForm.end_time)) {
+      setNotice("部分時段請選擇開始及結束時間。");
+      return;
+    }
+    await api("/api/admin/unavailable", {
+      method: "POST",
+      session,
+      body: {
+        ...unavailableForm,
+        therapist_id: therapistId,
+        end_date: unavailableForm.end_date || unavailableForm.start_date,
+        start_time: unavailableForm.all_day ? "" : unavailableForm.start_time,
+        end_time: unavailableForm.all_day ? "" : unavailableForm.end_time,
+      },
+    });
+    setNotice("不可預約時段已保存，月曆和前台名額已更新。");
+    setUnavailableForm(emptyUnavailableForm(therapistId, month));
+    await reload(session);
+    await loadCalendar();
+  }
+
+  async function removeUnavailable(id: string) {
+    if (!window.confirm("確認刪除此不可預約時段？")) return;
+    await api(`/api/admin/unavailable/${encodeURIComponent(id)}`, { method: "DELETE", session });
+    setNotice("不可預約時段已刪除。");
+    setUnavailableForm(emptyUnavailableForm(therapistId, month));
+    await reload(session);
+    await loadCalendar();
+  }
+
+  function editUnavailable(row: Record<string, any>) {
+    setUnavailableForm({
+      id: row.id ?? "",
+      therapist_id: row.therapist_id ?? therapistId,
+      start_date: row.start_date ?? `${month}-01`,
+      end_date: row.end_date ?? row.start_date ?? `${month}-01`,
+      start_time: row.start_time ?? "",
+      end_time: row.end_time ?? "",
+      all_day: Boolean(Number(row.all_day)),
+      reason: row.reason ?? "",
+    });
+  }
+
   async function reschedule(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await api("/api/admin/reschedule", { method: "POST", session, body: move });
@@ -1129,6 +1188,9 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
     .filter((item) => !selectedMoveBooking || item.service_area === selectedMoveBooking.service_area)
     .map((item) => [item.id, item.name]);
   const monthSummary = calendar?.monthSummary ?? {};
+  const selectedTherapist = data.therapists.find((item) => item.id === therapistId);
+  const selectedTherapistUnavailable = (calendar?.unavailable ?? []).filter((item) => item.therapist_id === therapistId);
+  const unavailableTimes = selectedTherapist ? SERVICE_TIMES[selectedTherapist.service_area] : SERVICE_TIMES.ELE;
 
   return (
     <section className="stack">
@@ -1143,6 +1205,7 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
         <Metric icon={<ClipboardCheck size={20} />} label="剩餘空位" value={Number(monthSummary.remaining) || 0} />
         <Metric icon={<CalendarDays size={20} />} label="不可預約容量" value={Number(monthSummary.blockedCapacity) || 0} />
         <Metric icon={<ShieldCheck size={20} />} label="滿約日" value={Number(monthSummary.fullDays) || 0} />
+        <Metric icon={<HelpCircle size={20} />} label="保留日" value={Number(monthSummary.reservedDays) || 0} />
         <Metric icon={<HelpCircle size={20} />} label="週六日" value={Number(monthSummary.weekendDays) || 0} />
       </div>
       <div className="month-grid">
@@ -1187,6 +1250,49 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
       </section>
       <section className="grid-two">
         <div className="panel">
+          <div className="panel-heading"><CalendarDays size={22} /><h2>治療師不可預約時段</h2></div>
+          {!therapistId || !selectedTherapist ? (
+            <div className="notice">請先在上方選擇一位治療師，才可在同一頁新增或修改年假、會議、病假等不可預約時段。</div>
+          ) : (
+            <form className="form-grid dense" onSubmit={saveUnavailable}>
+              <label>治療師<input disabled value={selectedTherapist.name} /></label>
+              <label>開始日期<input type="date" value={unavailableForm.start_date} onChange={(event) => setUnavailableForm({ ...unavailableForm, start_date: event.target.value })} required /></label>
+              <label>結束日期<input type="date" value={unavailableForm.end_date} onChange={(event) => setUnavailableForm({ ...unavailableForm, end_date: event.target.value })} /></label>
+              <label className="check-inline"><input checked={unavailableForm.all_day} onChange={(event) => setUnavailableForm({ ...unavailableForm, all_day: event.target.checked })} type="checkbox" />全日</label>
+              <label>開始時間<Select value={unavailableForm.start_time} onChange={(value) => setUnavailableForm({ ...unavailableForm, start_time: value })} options={[["", "選擇開始時間"], ...unavailableTimes.map((time) => [time, time])]} /></label>
+              <label>結束時間<Select value={unavailableForm.end_time} onChange={(value) => setUnavailableForm({ ...unavailableForm, end_time: value })} options={[["", "選擇結束時間"], ...unavailableTimes.map((time) => [time, time])]} /></label>
+              <label className="form-span">原因<input value={unavailableForm.reason} onChange={(event) => setUnavailableForm({ ...unavailableForm, reason: event.target.value })} placeholder="例如：年假、會議、培訓、病假" required /></label>
+              <div className="button-row form-span">
+                <button className="primary-button" type="submit"><Save size={18} />{unavailableForm.id ? "保存修改" : "新增不可預約"}</button>
+                <button className="ghost-button" onClick={() => setUnavailableForm(emptyUnavailableForm(therapistId, month))} type="button">清除</button>
+              </div>
+            </form>
+          )}
+        </div>
+        <div className="panel">
+          <div className="panel-heading"><ClipboardList size={22} /><h2>本月不可預約清單</h2></div>
+          {!therapistId ? (
+            <div className="notice">請選擇單一治療師查看清單。</div>
+          ) : (
+            <div className="plain-list unavailable-admin-list">
+              {selectedTherapistUnavailable.length ? selectedTherapistUnavailable.map((item) => (
+                <div key={item.id}>
+                  <span>
+                    <strong>{item.reason}</strong>
+                    <small>{item.start_date} 至 {item.end_date} · {Number(item.all_day) ? "全日" : `${item.start_time}-${item.end_time}`}</small>
+                  </span>
+                  <div className="button-row compact-actions">
+                    <button className="ghost-button compact" onClick={() => editUnavailable(item)} type="button">修改</button>
+                    <button className="danger-button compact" onClick={() => removeUnavailable(item.id)} type="button">刪除</button>
+                  </div>
+                </div>
+              )) : <small className="muted">本月沒有不可預約時段。</small>}
+            </div>
+          )}
+        </div>
+      </section>
+      <section className="grid-two">
+        <div className="panel">
           <div className="panel-heading"><Settings size={22} /><h2>每時間段可接納就診者數目</h2></div>
           <form className="form-grid dense" onSubmit={saveCapacity}>
             <label>套用治療師<Select value={capacity.therapist_id} onChange={(value) => setCapacity({ ...capacity, therapist_id: value })} options={[["", "通用容量"], ...data.therapists.map((item) => [item.id, item.name])]} /></label>
@@ -1220,8 +1326,14 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
         </div>
       </section>
       <section className="panel">
-        <div className="panel-heading"><ClipboardList size={22} /><h2>月份全部預約</h2></div>
-        <DataTable rows={calendar?.bookings ?? []} columns={[["date", "日期"], ["time", "時間"], ["therapist_name", "治療師"], ["patient_code", "代號"], ["display_name", "患者"], ["id_number", "身份證"], ["phone", "電話"], ["service_area", "類別"], ["subtype", "子類"]]} />
+        <div className="panel-heading"><ClipboardList size={22} /><h2>月度時間表矩陣</h2></div>
+        <MonthlyScheduleMatrix
+          bookings={calendar?.bookings ?? []}
+          capacities={data.capacities}
+          month={month}
+          therapist={selectedTherapist}
+          unavailable={calendar?.unavailable ?? []}
+        />
       </section>
     </section>
   );
@@ -1230,7 +1342,6 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
 function SettingsAdmin({ data, session, reload, setNotice }: { data: AdminData; session: string; reload: (session?: string) => Promise<void>; setNotice: (value: string) => void }) {
   const [therapist, setTherapist] = useState({ name: "", service_area: "ELE" as ServiceArea, code: "", gender: "unknown" as Gender });
   const [doctor, setDoctor] = useState({ code: "", name: "", quota: 30 });
-  const [unavailable, setUnavailable] = useState({ therapist_id: data.therapists[0]?.id ?? "", start_date: "", end_date: "", start_time: "", end_time: "", all_day: true, reason: "" });
 
   async function saveTherapist(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1246,14 +1357,7 @@ function SettingsAdmin({ data, session, reload, setNotice }: { data: AdminData; 
     await reload(session);
   }
 
-  async function saveUnavailable(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await api("/api/admin/unavailable", { method: "POST", session, body: unavailable });
-    setNotice("不可預約時段已保存，前台會即時封鎖。");
-    await reload(session);
-  }
-
-  async function remove(kind: "therapists" | "doctors" | "unavailable", id: string) {
+  async function remove(kind: "therapists" | "doctors", id: string) {
     await api(`/api/admin/${kind}/${encodeURIComponent(id)}`, { method: "DELETE", session });
     setNotice("已更新。");
     await reload(session);
@@ -1281,24 +1385,10 @@ function SettingsAdmin({ data, session, reload, setNotice }: { data: AdminData; 
             <button className="primary-button" type="submit"><Save size={18} />保存</button>
           </form>
         </div>
-        <div className="panel">
-          <div className="panel-heading"><CalendarDays size={22} /><h2>不可預約時段</h2></div>
-          <form className="form-grid dense" onSubmit={saveUnavailable}>
-            <label>治療師<Select value={unavailable.therapist_id} onChange={(value) => setUnavailable({ ...unavailable, therapist_id: value })} options={data.therapists.map((item) => [item.id, item.name])} /></label>
-            <label>開始日期<input type="date" value={unavailable.start_date} onChange={(event) => setUnavailable({ ...unavailable, start_date: event.target.value })} /></label>
-            <label>結束日期<input type="date" value={unavailable.end_date} onChange={(event) => setUnavailable({ ...unavailable, end_date: event.target.value })} /></label>
-            <label className="check-inline"><input checked={unavailable.all_day} onChange={(event) => setUnavailable({ ...unavailable, all_day: event.target.checked })} type="checkbox" />全日</label>
-            <label>開始時間<input disabled={unavailable.all_day} value={unavailable.start_time} onChange={(event) => setUnavailable({ ...unavailable, start_time: event.target.value })} /></label>
-            <label>結束時間<input disabled={unavailable.all_day} value={unavailable.end_time} onChange={(event) => setUnavailable({ ...unavailable, end_time: event.target.value })} /></label>
-            <label>原因<input value={unavailable.reason} onChange={(event) => setUnavailable({ ...unavailable, reason: event.target.value })} /></label>
-            <button className="primary-button" type="submit"><Save size={18} />保存</button>
-          </form>
-        </div>
       </section>
       <section className="grid-three">
         <ListPanel title="治療師清單" rows={data.therapists} main="name" sub={(row) => `${row.service_area} · ${genderText(row.gender)} · ${row.active ? "啟用" : "停用"}`} onDelete={(id) => remove("therapists", id)} />
         <ListPanel title="醫生清單" rows={data.doctors} main="name" sub={(row) => `${row.code} · quota ${row.quota} · ${row.active ? "啟用" : "停用"}`} onDelete={(id) => remove("doctors", id)} />
-        <ListPanel title="不可預約時段" rows={data.unavailable} main="reason" sub={(row) => `${row.therapist_name} · ${row.start_date} 至 ${row.end_date} ${row.all_day ? "全日" : `${row.start_time}-${row.end_time}`}`} onDelete={(id) => remove("unavailable", id)} />
       </section>
     </section>
   );
@@ -1357,6 +1447,89 @@ function DataTable({ rows, columns }: { rows: Array<Record<string, any>>; column
           ) : rows.map((row, index) => (
             <tr key={row.id ?? index}>
               {columns.map(([key]) => <td key={key}>{String(row[key] ?? "")}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function MonthlyScheduleMatrix({
+  bookings,
+  capacities,
+  month,
+  therapist,
+  unavailable,
+}: {
+  bookings: Array<Record<string, any>>;
+  capacities: Array<Record<string, any>>;
+  month: string;
+  therapist?: Therapist;
+  unavailable: Array<Record<string, any>>;
+}) {
+  if (!therapist) {
+    return <div className="notice">請先在上方選擇一位治療師，系統會在這裡顯示該治療師的月度時間表矩陣。</div>;
+  }
+
+  const dates = monthDays(month).filter((date) => {
+    const weekday = weekdayNumber(date);
+    return weekday >= 1 && weekday <= 5;
+  });
+  const times = SERVICE_TIMES[therapist.service_area];
+  const bookingsBySlot = bookings
+    .filter((item) => item.therapist_id === therapist.id)
+    .reduce<Record<string, Array<Record<string, any>>>>((groups, item) => {
+      const key = `${item.date}|${item.time}`;
+      groups[key] = [...(groups[key] ?? []), item];
+      return groups;
+    }, {});
+  const monthBlocks = unavailable.filter((item) => item.therapist_id === therapist.id);
+
+  return (
+    <div className="schedule-matrix-wrap">
+      <table className="schedule-matrix">
+        <thead>
+          <tr>
+            <th className="sticky-col">時間</th>
+            {dates.map((date) => (
+              <th className={weekdayNumber(date) === 1 ? "reserved-column" : ""} key={date}>
+                <span>{formatDate(date)}</span>
+                <small>{weekdayText(date)}</small>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {times.map((time) => (
+            <tr key={time}>
+              <th className="sticky-col time-col">{time}</th>
+              {dates.map((date) => {
+                const weekday = weekdayNumber(date);
+                const slotBookings = bookingsBySlot[`${date}|${time}`] ?? [];
+                const blocks = monthBlocks.filter((item) => unavailableCoversSlot(item, date, time));
+                const capacity = weekday === 1 ? 0 : matrixCapacity(capacities, therapist, weekday, time);
+                const isFull = capacity > 0 && slotBookings.length >= capacity;
+                const isReserved = weekday === 1;
+                return (
+                  <td className={`matrix-cell ${isReserved ? "matrix-reserved" : ""} ${blocks.length ? "matrix-blocked" : ""} ${isFull ? "matrix-full" : ""}`} key={`${date}-${time}`}>
+                    <div className="matrix-capacity">
+                      {isReserved ? "保留日" : capacity > 0 ? `${slotBookings.length}/${capacity}${isFull ? " 滿" : ""}` : "未開放"}
+                    </div>
+                    {blocks.map((block) => (
+                      <div className="matrix-block-note" key={block.id ?? `${block.reason}-${date}-${time}`}>
+                        {block.reason}{Number(block.all_day) ? "" : ` ${block.start_time}-${block.end_time}`}
+                      </div>
+                    ))}
+                    {slotBookings.map((booking, index) => (
+                      <div className="matrix-patient" key={booking.id ?? `${date}-${time}-${index}`}>
+                        <strong>{booking.display_name || booking.patient_code || "未命名患者"}</strong>
+                        <small>{booking.id_number || "未填身份證"}</small>
+                      </div>
+                    ))}
+                  </td>
+                );
+              })}
             </tr>
           ))}
         </tbody>
@@ -1656,6 +1829,7 @@ function weekdayText(date: string) {
 function calendarStatusText(day?: CalendarDayStat) {
   if (!day) return "未載入";
   if (day.status === "weekend") return "週六/日";
+  if (day.status === "reserved") return "保留日";
   if (day.status === "unavailable") return "不可預約";
   if (day.status === "full") return "滿約";
   if (day.status === "partial") return "部分已約";
@@ -1686,6 +1860,46 @@ function groupBy(rows: any[], key: string) {
     groups[value] = [...(groups[value] ?? []), row];
     return groups;
   }, {});
+}
+
+function emptyUnavailableForm(therapistId: string, month: string) {
+  return {
+    id: "",
+    therapist_id: therapistId,
+    start_date: `${month}-01`,
+    end_date: `${month}-01`,
+    start_time: "",
+    end_time: "",
+    all_day: true,
+    reason: "",
+  };
+}
+
+function matrixCapacity(rows: Array<Record<string, any>>, therapist: Therapist, weekday: number, time: string) {
+  let max = 0;
+  for (const subtype of SUBTYPES[therapist.service_area]) {
+    const subtypeRows = rows.filter((row) => (
+      row.service_area === therapist.service_area
+      && row.subtype === subtype
+      && Number(row.weekday) === weekday
+      && row.time === time
+    ));
+    const specific = capacityFromRows(subtypeRows, therapist.id, weekday, time);
+    const shared = capacityFromRows(subtypeRows, "", weekday, time);
+    max = Math.max(max, specific ?? shared ?? 0);
+  }
+  return max;
+}
+
+function capacityFromRows(rows: Array<Record<string, any>>, therapistId: string, weekday: number, time: string) {
+  const row = rows.find((item) => String(item.therapist_id ?? "") === therapistId && Number(item.weekday) === weekday && item.time === time);
+  return row ? Number(row.capacity) || 0 : undefined;
+}
+
+function unavailableCoversSlot(block: Record<string, any>, date: string, time: string) {
+  if (date < block.start_date || date > block.end_date) return false;
+  if (Number(block.all_day)) return true;
+  return time >= String(block.start_time ?? "") && time < String(block.end_time ?? "");
 }
 
 function sumCount(rows: any[], key = "count") {

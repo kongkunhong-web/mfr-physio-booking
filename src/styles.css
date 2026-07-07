@@ -836,6 +836,11 @@ td {
   background: #fff6df;
 }
 
+.status-reserved {
+  color: #5d6470;
+  background: #eef1f3;
+}
+
 .status-unavailable,
 .status-no-capacity {
   color: #5d6470;
@@ -867,6 +872,11 @@ td {
   background: #fffaf0;
 }
 
+.calendar-day.status-reserved {
+  border-color: #d1d8dd;
+  background: #f4f6f7;
+}
+
 .calendar-day.status-unavailable {
   border-color: #c9d1d6;
   background: #f4f6f7;
@@ -877,12 +887,140 @@ td {
 }
 
 .mini-metrics {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
 }
 
 .detail-grid {
   display: grid;
   gap: 10px;
+}
+
+.schedule-matrix-wrap {
+  max-width: 100%;
+  overflow: auto;
+  border: 1px solid #d7e3df;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.schedule-matrix {
+  min-width: 1280px;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.8rem;
+}
+
+.schedule-matrix th,
+.schedule-matrix td {
+  border-right: 1px solid #e1ebe8;
+  border-bottom: 1px solid #e1ebe8;
+}
+
+.schedule-matrix thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  min-width: 132px;
+  color: #203733;
+  background: #edf7f3;
+}
+
+.schedule-matrix thead th span,
+.schedule-matrix thead th small {
+  display: block;
+  white-space: nowrap;
+}
+
+.schedule-matrix .sticky-col {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  min-width: 72px;
+  background: #f8fbfa;
+  box-shadow: 1px 0 0 #d7e3df;
+}
+
+.schedule-matrix .time-col {
+  color: #1f6f65;
+  font-size: 0.86rem;
+}
+
+.schedule-matrix .reserved-column {
+  color: #5d6470;
+  background: #eef1f3;
+}
+
+.matrix-cell {
+  min-width: 132px;
+  height: 86px;
+  padding: 6px;
+  background: #ffffff;
+}
+
+.matrix-reserved {
+  background: #f4f6f7;
+}
+
+.matrix-blocked {
+  background: #fff6f1;
+}
+
+.matrix-full {
+  background: #fff0ee;
+}
+
+.matrix-capacity {
+  display: inline-flex;
+  margin-bottom: 5px;
+  border-radius: 999px;
+  padding: 2px 6px;
+  color: #24554e;
+  background: #e9f4f1;
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+.matrix-reserved .matrix-capacity {
+  color: #5d6470;
+  background: #e4e9ec;
+}
+
+.matrix-full .matrix-capacity {
+  color: #9f2f2b;
+  background: #ffe0dc;
+}
+
+.matrix-block-note,
+.matrix-patient {
+  display: grid;
+  gap: 1px;
+  margin-top: 4px;
+  border-radius: 6px;
+  padding: 5px 6px;
+}
+
+.matrix-block-note {
+  color: #9f2f2b;
+  background: #ffe7df;
+  font-weight: 900;
+}
+
+.matrix-patient {
+  color: #203733;
+  background: #eef8f5;
+}
+
+.matrix-patient strong,
+.matrix-patient small {
+  overflow-wrap: anywhere;
+}
+
+.compact-actions {
+  justify-content: flex-end;
+}
+
+.unavailable-admin-list div {
+  grid-template-columns: 1fr auto;
 }
 
 .compact-list {
