@@ -120,6 +120,26 @@ type AdminData = {
   helpPhone: string;
 };
 
+type CalendarDayStat = {
+  date: string;
+  weekday: number;
+  isWeekend: boolean;
+  capacityTotal: number;
+  booked: number;
+  remaining: number;
+  blockedCapacity: number;
+  status: "weekend" | "unavailable" | "no-capacity" | "full" | "partial" | "available";
+  unavailableReasons: Array<Record<string, any>>;
+  vacancyTimes: Array<Record<string, any>>;
+};
+
+type AdminCalendarData = {
+  bookings: Array<Record<string, any>>;
+  unavailable: Array<Record<string, any>>;
+  dailyStats: CalendarDayStat[];
+  monthSummary: Record<string, number>;
+};
+
 const HELP_PHONE = "8390 5180";
 const ADMIN_SESSION_KEY = "mfr-admin-session-v2";
 const SUBTYPES: Record<ServiceArea, string[]> = {
@@ -128,6 +148,11 @@ const SUBTYPES: Record<ServiceArea, string[]> = {
 };
 const WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"];
 const SESSION_OPTIONS = Array.from({ length: 7 }, (_, index) => index + 6);
+const WEEKDAY_OPTIONS = [["2", "星期二"], ["3", "星期三"], ["4", "星期四"], ["5", "星期五"]];
+const SERVICE_TIMES: Record<ServiceArea, string[]> = {
+  ELE: ["08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00", "15:30", "16:00", "16:30", "17:00", "17:30", "18:00", "18:30"],
+  GYM: ["08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00", "15:30", "16:00", "16:30", "17:00", "17:30", "18:00", "18:30"],
+};
 
 function App() {
   const [route, setRoute] = useState<Route>(() => routeFromPath(window.location.pathname));
@@ -716,6 +741,7 @@ function AdminPortal() {
   const tabs = [
     ["dashboard", "儀表板", LayoutDashboard],
     ["patients", "患者開通", UserPlus],
+    ["overview", "患者總覽", Users],
     ["calendar", "月曆排期", CalendarDays],
     ["settings", "資料設定", Settings],
     ["logs", "SMS/求助", ClipboardList],
@@ -745,6 +771,7 @@ function AdminPortal() {
 
       {tab === "dashboard" && <Dashboard data={data} />}
       {tab === "patients" && <PatientAdmin data={data} session={session} reload={load} setNotice={setNotice} />}
+      {tab === "overview" && <PatientOverview data={data} session={session} reload={load} setNotice={setNotice} />}
       {tab === "calendar" && <CalendarAdmin data={data} session={session} reload={load} setNotice={setNotice} />}
       {tab === "settings" && <SettingsAdmin data={data} session={session} reload={load} setNotice={setNotice} />}
       {tab === "logs" && <LogsAdmin data={data} session={session} reload={load} setNotice={setNotice} />}
@@ -759,6 +786,7 @@ function Dashboard({ data }: { data: AdminData }) {
   const status = dashboard.statusCounts ?? [];
   const totalPatients = sumCount(status);
   const bookedSessions = sumCount(dashboard.therapistLoad ?? [], "booked_sessions");
+  const monthStats = dashboard.monthStats ?? {};
   return (
     <div className="stack">
       <div className="metric-grid">
@@ -766,6 +794,10 @@ function Dashboard({ data }: { data: AdminData }) {
         <Metric icon={<Check size={22} />} label="已預約堂數" value={bookedSessions} />
         <Metric icon={<Activity size={22} />} label="治療師" value={data.therapists.filter((item) => item.active).length} />
         <Metric icon={<PhoneCall size={22} />} label="求助紀錄" value={data.helpRequests.length} />
+        <Metric icon={<CalendarDays size={22} />} label={`${dashboard.currentMonth ?? "本月"} 預約`} value={Number(monthStats.booked) || 0} />
+        <Metric icon={<ClipboardCheck size={22} />} label="本月剩餘空位" value={Number(monthStats.remaining) || 0} />
+        <Metric icon={<Settings size={22} />} label="本月總容量" value={Number(monthStats.capacityTotal) || 0} />
+        <Metric icon={<ShieldCheck size={22} />} label="滿約日數" value={Number(monthStats.fullDays) || 0} />
       </div>
       <section className="panel">
         <div className="panel-heading">
@@ -826,9 +858,13 @@ function PatientAdmin({
 
   async function savePatient(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await api("/api/admin/patients", { method: "POST", session, body: form });
-    setNotice("患者條件已暫存，可在下方二次核對後開通。");
-    await reload(session);
+    try {
+      await api("/api/admin/patients", { method: "POST", session, body: form });
+      setNotice("患者條件已暫存，可在下方二次核對後開通。");
+      await reload(session);
+    } catch (error) {
+      setNotice(errorMessage(error));
+    }
   }
 
   async function activate() {
@@ -887,28 +923,186 @@ function PatientAdmin({
   );
 }
 
+function PatientOverview({ data, session, reload, setNotice }: { data: AdminData; session: string; reload: (session?: string) => Promise<void>; setNotice: (value: string) => void }) {
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("");
+  const [area, setArea] = useState("");
+  const [doctorId, setDoctorId] = useState("");
+  const [editing, setEditing] = useState<any | null>(null);
+  const rows = data.patients.filter((patient) => {
+    const text = `${patient.patient_code} ${patient.display_name} ${patient.id_number ?? ""} ${patient.phone ?? ""}`.toLowerCase();
+    return (!query || text.includes(query.toLowerCase()))
+      && (!status || patient.status === status)
+      && (!area || patient.service_area === area)
+      && (!doctorId || patient.doctor_id === doctorId);
+  });
+
+  function startEdit(patient: Patient) {
+    setEditing({
+      id: patient.id,
+      patient_code: patient.patient_code,
+      display_name: patient.display_name,
+      id_number: patient.id_number ?? "",
+      phone: patient.phone ?? "",
+      doctor_id: patient.doctor_id,
+      service_area: patient.service_area,
+      subtype: patient.subtype,
+      gender_preference: patient.gender_preference,
+      session_count: patient.session_count,
+      custom_session_count: "",
+      status: patient.status,
+    });
+  }
+
+  async function saveEdit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editing) return;
+    try {
+      await api("/api/admin/patients", { method: "POST", session, body: editing });
+      setNotice(editing.status === "booked" ? "已更新患者登入資料；已預約患者的療程條件保持不變。" : "患者資料已更新。");
+      setEditing(null);
+      await reload(session);
+    } catch (error) {
+      setNotice(errorMessage(error));
+    }
+  }
+
+  async function cancelBooking(patient: Patient) {
+    if (!window.confirm(`取消 ${patient.display_name} 的整個療程？患者會回到可重新預約狀態。`)) return;
+    await api(`/api/admin/patients/${encodeURIComponent(patient.id)}/cancel-booking`, { method: "POST", session });
+    setNotice("已取消整個療程，患者可重新登入前台預約。");
+    await reload(session);
+  }
+
+  async function deletePatient(patient: Patient) {
+    if (!window.confirm(`永久刪除 ${patient.display_name} 的患者帳號、預約、SMS 和求助紀錄？`)) return;
+    if (!window.confirm("請再次確認：此操作不能復原。")) return;
+    await api(`/api/admin/patients/${encodeURIComponent(patient.id)}`, { method: "DELETE", session });
+    setNotice("患者帳號已刪除。");
+    if (editing?.id === patient.id) setEditing(null);
+    await reload(session);
+  }
+
+  return (
+    <section className="stack">
+      <div className="panel toolbar-panel filter-bar">
+        <label>搜尋患者<input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="代號、姓名、身份證、電話" /></label>
+        <label>狀態<Select value={status} onChange={setStatus} options={[["", "全部"], ["draft", "draft"], ["pending", "pending"], ["active", "active"], ["booked", "booked"]]} /></label>
+        <label>大類<Select value={area} onChange={setArea} options={[["", "全部"], ["ELE", "ELE"], ["GYM", "GYM"]]} /></label>
+        <label>轉介醫生<Select value={doctorId} onChange={setDoctorId} options={[["", "全部"], ...data.doctors.map((doctor) => [doctor.id, `${doctor.code} ${doctor.name}`])]} /></label>
+      </div>
+
+      <section className="grid-two">
+        <div className="panel">
+          <div className="panel-heading"><Users size={22} /><h2>患者總覽</h2></div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>代號</th>
+                  <th>患者</th>
+                  <th>前台登入資料</th>
+                  <th>條件</th>
+                  <th>狀態</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.length === 0 ? (
+                  <tr><td colSpan={6}>沒有符合條件的患者</td></tr>
+                ) : rows.map((patient) => (
+                  <tr key={patient.id}>
+                    <td>{patient.patient_code}</td>
+                    <td><strong>{patient.display_name}</strong><br /><small>Dr {patient.doctor_code}</small></td>
+                    <td><span className="login-chip">身份證 {patient.id_number}</span><span className="login-chip">電話 {patient.phone}</span></td>
+                    <td>{patient.service_area}/{patient.subtype}<br /><small>{patient.session_count} 堂 · {genderPreferenceText(patient.gender_preference)}</small></td>
+                    <td><span className={`status-badge status-${patient.status}`}>{patient.status}</span></td>
+                    <td>
+                      <div className="inline-actions">
+                        <button className="ghost-button compact" onClick={() => startEdit(patient)} type="button">修改</button>
+                        <button className="ghost-button compact" disabled={patient.status !== "booked"} onClick={() => cancelBooking(patient)} type="button">取消療程</button>
+                        <button className="danger-button compact" onClick={() => deletePatient(patient)} type="button">刪除</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-heading"><ClipboardCheck size={22} /><h2>患者資料修改</h2></div>
+          {!editing ? (
+            <div className="notice">在左側選擇一位患者後，可修改登入資料、醫生和條件。已預約患者需先取消療程才可修改治療條件。</div>
+          ) : (
+            <form className="form-grid dense" onSubmit={saveEdit}>
+              <label>患者代號<input disabled={editing.status === "booked"} value={editing.patient_code} onChange={(event) => setEditing({ ...editing, patient_code: event.target.value })} /></label>
+              <label>顯示名稱<input value={editing.display_name} onChange={(event) => setEditing({ ...editing, display_name: event.target.value })} /></label>
+              <label>身份證<input value={editing.id_number} onChange={(event) => setEditing({ ...editing, id_number: event.target.value })} required /></label>
+              <label>電話<input value={editing.phone} onChange={(event) => setEditing({ ...editing, phone: event.target.value })} required /></label>
+              <label>轉介醫生<Select value={editing.doctor_id} onChange={(value) => setEditing({ ...editing, doctor_id: value })} options={data.doctors.filter((item) => item.active).map((item) => [item.id, `${item.code} ${item.name}`])} /></label>
+              <label>狀態<Select value={editing.status} onChange={(value) => setEditing({ ...editing, status: value })} options={[["draft", "draft"], ["pending", "pending"], ["active", "active"], ["booked", "booked"]]} /></label>
+              <label>治療大類<Select value={editing.service_area} onChange={(value) => setEditing({ ...editing, service_area: value as ServiceArea, subtype: SUBTYPES[value as ServiceArea][0] })} options={[["ELE", "ELE"], ["GYM", "GYM"]]} /></label>
+              <label>治療子類<Select value={editing.subtype} onChange={(value) => setEditing({ ...editing, subtype: value })} options={SUBTYPES[editing.service_area as ServiceArea].map((item) => [item, item])} /></label>
+              <label>性別限制<Select value={editing.gender_preference} onChange={(value) => setEditing({ ...editing, gender_preference: value as GenderPreference })} options={[["any", "不限"], ["male", "男治療師"], ["female", "女治療師"]]} /></label>
+              <label>堂數<Select value={String(editing.session_count)} onChange={(value) => setEditing({ ...editing, session_count: Number(value), custom_session_count: "" })} options={SESSION_OPTIONS.map((item) => [String(item), `${item} 堂`])} /></label>
+              {editing.status === "booked" && <div className="notice form-span">此患者已確認療程，治療大類、子類、性別限制和堂數會由後端保持原值。若要改療程條件，請先取消整個療程。</div>}
+              <div className="button-row form-span">
+                <button className="primary-button" type="submit"><Save size={18} />保存修改</button>
+                <button className="ghost-button" onClick={() => setEditing(null)} type="button">取消</button>
+              </div>
+            </form>
+          )}
+        </div>
+      </section>
+    </section>
+  );
+}
+
 function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; session: string; reload: (session?: string) => Promise<void>; setNotice: (value: string) => void }) {
   const [therapistId, setTherapistId] = useState(data.therapists[0]?.id ?? "");
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
-  const [calendar, setCalendar] = useState<{ bookings: any[]; unavailable: any[] } | null>(null);
+  const [calendar, setCalendar] = useState<AdminCalendarData | null>(null);
+  const [selectedDate, setSelectedDate] = useState("");
   const [capacity, setCapacity] = useState({ therapist_id: "", service_area: "ELE" as ServiceArea, subtype: "ELE-1", weekday: 2, time: "08:30", capacity: 1 });
   const [move, setMove] = useState({ appointmentId: "", therapistId: "", date: "", time: "" });
+  const [moveTimes, setMoveTimes] = useState<Array<Record<string, any>>>([]);
 
   async function loadCalendar() {
     const query = new URLSearchParams({ month });
     if (therapistId) query.set("therapistId", therapistId);
-    setCalendar(await api(`/api/admin/calendar?${query}`, { session }));
+    const next = await api<AdminCalendarData>(`/api/admin/calendar?${query}`, { session });
+    setCalendar(next);
+    setSelectedDate((current) => current && current.startsWith(month) ? current : `${month}-01`);
   }
 
   useEffect(() => {
     loadCalendar().catch(() => null);
   }, [therapistId, month]);
 
+  useEffect(() => {
+    async function loadMoveTimes() {
+      if (!move.appointmentId || !move.therapistId || !move.date) {
+        setMoveTimes([]);
+        return;
+      }
+      const query = new URLSearchParams({ appointmentId: move.appointmentId, therapistId: move.therapistId, date: move.date });
+      const result = await api<{ options: Array<Record<string, any>> }>(`/api/admin/reschedule-options?${query}`, { session });
+      setMoveTimes(result.options ?? []);
+      if (result.options?.length && !result.options.some((item) => item.available && item.time === move.time)) {
+        setMove((current) => ({ ...current, time: result.options.find((item) => item.available)?.time ?? "" }));
+      }
+    }
+    loadMoveTimes().catch((error) => setNotice(errorMessage(error)));
+  }, [move.appointmentId, move.therapistId, move.date]);
+
   async function saveCapacity(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await api("/api/admin/capacity", { method: "POST", session, body: capacity });
-    setNotice("容量已更新，前台會即時使用新容量。");
+    setNotice("每時間段可接納就診者數目已更新，患者前台會即時反映。");
     await reload(session);
+    await loadCalendar();
   }
 
   async function reschedule(event: React.FormEvent<HTMLFormElement>) {
@@ -918,52 +1112,116 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
     await loadCalendar();
   }
 
+  async function seedWkDemo() {
+    const result = await api<{ createdPatients: number; createdSessions: number }>("/api/admin/demo/wk-july-full", { method: "POST", session });
+    setNotice(`WK 2026年7月滿約示範已生成/補齊：新增 ${result.createdSessions} 堂。`);
+    setTherapistId("gym-03");
+    setMonth("2026-07");
+    await reload(session);
+  }
+
   const bookingsByDate = groupBy(calendar?.bookings ?? [], "date");
+  const statsByDate = Object.fromEntries((calendar?.dailyStats ?? []).map((day) => [day.date, day]));
+  const selectedStats = statsByDate[selectedDate] as CalendarDayStat | undefined;
+  const selectedBookings = bookingsByDate[selectedDate] ?? [];
+  const selectedMoveBooking = (calendar?.bookings ?? []).find((item: any) => item.id === move.appointmentId);
+  const therapistOptions = data.therapists
+    .filter((item) => !selectedMoveBooking || item.service_area === selectedMoveBooking.service_area)
+    .map((item) => [item.id, item.name]);
+  const monthSummary = calendar?.monthSummary ?? {};
 
   return (
     <section className="stack">
       <div className="panel toolbar-panel">
         <label>治療師<Select value={therapistId} onChange={setTherapistId} options={[["", "全部"], ...data.therapists.map((item) => [item.id, `${item.name} (${item.service_area})`])]} /></label>
         <label>月份<input type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></label>
+        <button className="ghost-button" onClick={seedWkDemo} type="button"><ShieldCheck size={18} />生成 WK 7月滿約示範</button>
+      </div>
+      <div className="metric-grid mini-metrics">
+        <Metric icon={<Settings size={20} />} label="總空位" value={Number(monthSummary.capacityTotal) || 0} />
+        <Metric icon={<Check size={20} />} label="已預約" value={Number(monthSummary.booked) || 0} />
+        <Metric icon={<ClipboardCheck size={20} />} label="剩餘空位" value={Number(monthSummary.remaining) || 0} />
+        <Metric icon={<CalendarDays size={20} />} label="不可預約容量" value={Number(monthSummary.blockedCapacity) || 0} />
+        <Metric icon={<ShieldCheck size={20} />} label="滿約日" value={Number(monthSummary.fullDays) || 0} />
+        <Metric icon={<HelpCircle size={20} />} label="週六日" value={Number(monthSummary.weekendDays) || 0} />
       </div>
       <div className="month-grid">
         {monthDays(month).map((date) => (
-          <div className="day-card" key={date}>
+          <button className={`day-card calendar-day status-${statsByDate[date]?.status ?? "empty"} ${selectedDate === date ? "selected" : ""}`} key={date} onClick={() => setSelectedDate(date)} type="button">
             <strong>{date.slice(8)} {weekdayText(date)}</strong>
-            <span>{(bookingsByDate[date] ?? []).length} 堂</span>
-            {(bookingsByDate[date] ?? []).slice(0, 4).map((item: any) => (
-              <small key={item.id}>{item.time} {item.display_name || item.patient_code}</small>
+            <span className="status-badge">{calendarStatusText(statsByDate[date])}</span>
+            <small>總 {statsByDate[date]?.capacityTotal ?? 0} · 已約 {statsByDate[date]?.booked ?? 0} · 剩 {statsByDate[date]?.remaining ?? 0}</small>
+            {(statsByDate[date]?.unavailableReasons ?? []).slice(0, 2).map((item: any, index: number) => (
+              <small className="blocked-note" key={`${item.reason}-${index}`}>{item.therapistName || item.therapistId} {item.time} {item.reason}</small>
             ))}
-          </div>
+          </button>
         ))}
       </div>
       <section className="grid-two">
         <div className="panel">
-          <div className="panel-heading"><Settings size={22} /><h2>逐格容量修改</h2></div>
+          <div className="panel-heading"><CalendarDays size={22} /><h2>{selectedDate || "選擇日期"} 日詳情</h2></div>
+          {!selectedStats ? (
+            <div className="notice">請在月曆選擇日期。</div>
+          ) : (
+            <div className="detail-grid">
+              <div className="summary-card"><strong>容量</strong><span>總 {selectedStats.capacityTotal} · 已約 {selectedStats.booked} · 剩餘 {selectedStats.remaining} · 不可預約 {selectedStats.blockedCapacity}</span></div>
+              <div className="plain-list">
+                <strong>不可預約時段</strong>
+                {selectedStats.unavailableReasons.length ? selectedStats.unavailableReasons.map((item, index) => (
+                  <div key={`${item.reason}-${index}`}><span><strong>{item.therapistName || item.therapistId}</strong><small>{item.time} · {item.reason}</small></span></div>
+                )) : <small className="muted">沒有不可預約時段</small>}
+              </div>
+              <div className="plain-list">
+                <strong>剩餘空位時間</strong>
+                {selectedStats.vacancyTimes.length ? selectedStats.vacancyTimes.slice(0, 18).map((item, index) => (
+                  <div key={`${item.therapistId}-${item.time}-${index}`}><span><strong>{item.time}</strong><small>{item.therapistName} · 剩 {item.remaining}/{item.capacity}</small></span></div>
+                )) : <small className="muted">沒有剩餘空位</small>}
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="panel">
+          <div className="panel-heading"><ClipboardList size={22} /><h2>當日患者</h2></div>
+          <DataTable rows={selectedBookings} columns={[["time", "時間"], ["therapist_name", "治療師"], ["patient_code", "代號"], ["display_name", "患者"], ["id_number", "身份證"], ["phone", "電話"], ["subtype", "子類"]]} />
+        </div>
+      </section>
+      <section className="grid-two">
+        <div className="panel">
+          <div className="panel-heading"><Settings size={22} /><h2>每時間段可接納就診者數目</h2></div>
           <form className="form-grid dense" onSubmit={saveCapacity}>
             <label>套用治療師<Select value={capacity.therapist_id} onChange={(value) => setCapacity({ ...capacity, therapist_id: value })} options={[["", "通用容量"], ...data.therapists.map((item) => [item.id, item.name])]} /></label>
-            <label>大類<Select value={capacity.service_area} onChange={(value) => setCapacity({ ...capacity, service_area: value as ServiceArea, subtype: SUBTYPES[value as ServiceArea][0] })} options={[["ELE", "ELE"], ["GYM", "GYM"]]} /></label>
+            <label>大類<Select value={capacity.service_area} onChange={(value) => setCapacity({ ...capacity, service_area: value as ServiceArea, subtype: SUBTYPES[value as ServiceArea][0], time: SERVICE_TIMES[value as ServiceArea][0] })} options={[["ELE", "ELE"], ["GYM", "GYM"]]} /></label>
             <label>子類<Select value={capacity.subtype} onChange={(value) => setCapacity({ ...capacity, subtype: value })} options={SUBTYPES[capacity.service_area].map((item) => [item, item])} /></label>
-            <label>星期<Select value={String(capacity.weekday)} onChange={(value) => setCapacity({ ...capacity, weekday: Number(value) })} options={[["2", "星期二"], ["3", "星期三"], ["4", "星期四"], ["5", "星期五"]]} /></label>
-            <label>時間<input value={capacity.time} onChange={(event) => setCapacity({ ...capacity, time: event.target.value })} placeholder="08:30" /></label>
-            <label>容量<input inputMode="numeric" value={capacity.capacity} onChange={(event) => setCapacity({ ...capacity, capacity: Number(event.target.value) })} /></label>
+            <label>星期<Select value={String(capacity.weekday)} onChange={(value) => setCapacity({ ...capacity, weekday: Number(value) })} options={WEEKDAY_OPTIONS} /></label>
+            <label>時間<Select value={capacity.time} onChange={(value) => setCapacity({ ...capacity, time: value })} options={SERVICE_TIMES[capacity.service_area].map((time) => [time, time])} /></label>
+            <label>每時間段可接納就診者數目<input inputMode="numeric" value={capacity.capacity} onChange={(event) => setCapacity({ ...capacity, capacity: Number(event.target.value) })} /></label>
             <button className="primary-button" type="submit"><Save size={18} />保存容量</button>
           </form>
         </div>
         <div className="panel">
           <div className="panel-heading"><RefreshCw size={22} /><h2>內部改期/轉治療師</h2></div>
           <form className="form-grid dense" onSubmit={reschedule}>
-            <label>預約堂 ID<Select value={move.appointmentId} onChange={(value) => setMove({ ...move, appointmentId: value })} options={(calendar?.bookings ?? []).map((item: any) => [item.id, `${item.date} ${item.time} ${item.display_name}`])} /></label>
-            <label>新治療師<Select value={move.therapistId} onChange={(value) => setMove({ ...move, therapistId: value })} options={data.therapists.map((item) => [item.id, item.name])} /></label>
+            <label>預約堂 ID<Select value={move.appointmentId} onChange={(value) => {
+              const booking = (calendar?.bookings ?? []).find((item: any) => item.id === value);
+              setMove({ appointmentId: value, therapistId: booking?.therapist_id ?? "", date: booking?.date ?? "", time: booking?.time ?? "" });
+            }} options={[["", "選擇一堂預約"], ...(calendar?.bookings ?? []).map((item: any) => [item.id, `${item.date} ${item.time} ${item.display_name || item.patient_code}`])]} /></label>
+            <label>新治療師<Select value={move.therapistId} onChange={(value) => setMove({ ...move, therapistId: value, time: "" })} options={[["", "選擇治療師"], ...therapistOptions]} /></label>
             <label>新日期<input type="date" value={move.date} onChange={(event) => setMove({ ...move, date: event.target.value })} /></label>
-            <label>新時間<input value={move.time} onChange={(event) => setMove({ ...move, time: event.target.value })} placeholder="08:30" /></label>
-            <button className="primary-button" type="submit"><Save size={18} />檢查容量並保存</button>
+            <label>新時間<Select value={move.time} onChange={(value) => setMove({ ...move, time: value })} options={[["", move.appointmentId && move.therapistId && move.date ? "選擇可用時間" : "先選預約/治療師/日期"], ...moveTimes.filter((item) => item.available).map((item) => [item.time, item.time])]} /></label>
+            <button className="primary-button" type="submit"><Save size={18} />確認改期或轉治療師</button>
           </form>
+          {moveTimes.some((item) => !item.available) && (
+            <div className="plain-list compact-list">
+              {moveTimes.filter((item) => !item.available).slice(0, 6).map((item) => (
+                <div key={item.time}><span><strong>{item.time}</strong><small>{item.reason}</small></span></div>
+              ))}
+            </div>
+          )}
         </div>
       </section>
       <section className="panel">
-        <div className="panel-heading"><ClipboardList size={22} /><h2>月內預約詳情</h2></div>
-        <DataTable rows={calendar?.bookings ?? []} columns={[["date", "日期"], ["time", "時間"], ["therapist_name", "治療師"], ["display_name", "患者"], ["service_area", "類別"], ["subtype", "子類"]]} />
+        <div className="panel-heading"><ClipboardList size={22} /><h2>月份全部預約</h2></div>
+        <DataTable rows={calendar?.bookings ?? []} columns={[["date", "日期"], ["time", "時間"], ["therapist_name", "治療師"], ["patient_code", "代號"], ["display_name", "患者"], ["id_number", "身份證"], ["phone", "電話"], ["service_area", "類別"], ["subtype", "子類"]]} />
       </section>
     </section>
   );
@@ -1393,6 +1651,16 @@ function formatDate(date: string) {
 
 function weekdayText(date: string) {
   return `星期${WEEKDAYS[new Date(`${date}T00:00:00Z`).getUTCDay()]}`;
+}
+
+function calendarStatusText(day?: CalendarDayStat) {
+  if (!day) return "未載入";
+  if (day.status === "weekend") return "週六/日";
+  if (day.status === "unavailable") return "不可預約";
+  if (day.status === "full") return "滿約";
+  if (day.status === "partial") return "部分已約";
+  if (day.status === "no-capacity") return "無時段";
+  return "有空位";
 }
 
 function weekKey(date: string) {

@@ -786,6 +786,118 @@ td {
   justify-content: flex-end;
 }
 
+.filter-bar {
+  align-items: end;
+}
+
+.inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.login-chip,
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 26px;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.login-chip {
+  margin: 0 4px 4px 0;
+  color: #1f4f48;
+  background: #eef8f5;
+}
+
+.status-badge {
+  color: #24554e;
+  background: #e9f4f1;
+}
+
+.status-booked,
+.status-full {
+  color: #9f2f2b;
+  background: #fff0ee;
+}
+
+.status-active,
+.status-available {
+  color: #1f6f65;
+  background: #e8f6f2;
+}
+
+.status-weekend {
+  color: #8a5b10;
+  background: #fff6df;
+}
+
+.status-unavailable,
+.status-no-capacity {
+  color: #5d6470;
+  background: #edf0f2;
+}
+
+.status-partial {
+  color: #6e4d08;
+  background: #fff8e6;
+}
+
+.calendar-day {
+  border: 1px solid #d7e3df;
+  text-align: left;
+}
+
+.calendar-day.selected {
+  outline: 3px solid rgba(31, 111, 101, 0.22);
+  border-color: #1f6f65;
+}
+
+.calendar-day.status-full {
+  border-color: #eab0ab;
+  background: #fff8f7;
+}
+
+.calendar-day.status-weekend {
+  border-color: #f0d38f;
+  background: #fffaf0;
+}
+
+.calendar-day.status-unavailable {
+  border-color: #c9d1d6;
+  background: #f4f6f7;
+}
+
+.blocked-note {
+  color: #9f2f2b !important;
+}
+
+.mini-metrics {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.detail-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.compact-list {
+  margin-top: 12px;
+}
+
+.muted {
+  color: #6f7a77;
+  font-weight: 800;
+}
+
+.form-span {
+  grid-column: 1 / -1;
+}
+
 @media (max-width: 1060px) {
   .home-grid,
   .booking-layout,
@@ -810,6 +922,10 @@ td {
 
   .month-grid {
     grid-template-columns: repeat(4, minmax(120px, 1fr));
+  }
+
+  .mini-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
