@@ -100,6 +100,13 @@ type Booking = {
   appointments: Appointment[];
 };
 
+type PlanOption = {
+  key: string;
+  title: string;
+  caption: string;
+  appointments: Appointment[];
+};
+
 type AdminData = {
   therapists: Therapist[];
   doctors: Doctor[];
@@ -113,7 +120,7 @@ type AdminData = {
   helpPhone: string;
 };
 
-const HELP_PHONE = "89305130";
+const HELP_PHONE = "8390 5180";
 const ADMIN_SESSION_KEY = "mfr-admin-session-v2";
 const SUBTYPES: Record<ServiceArea, string[]> = {
   ELE: ["ELE-1", "ELE-2", "ELE-3"],
@@ -189,9 +196,11 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
   const [patient, setPatient] = useState<Patient | null>(null);
   const [booking, setBooking] = useState<Booking | null>(null);
   const [availability, setAvailability] = useState<Availability | null>(null);
+  const [step, setStep] = useState<"rules" | "time" | "therapist" | "plan" | "custom" | "review" | "summary">("rules");
+  const [selectedTime, setSelectedTime] = useState("");
+  const [selectedTherapistId, setSelectedTherapistId] = useState("");
   const [selected, setSelected] = useState<Appointment[]>([]);
-  const [weekIndex, setWeekIndex] = useState(0);
-  const [rulesReady, setRulesReady] = useState(false);
+  const [selectedPlanKey, setSelectedPlanKey] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -199,6 +208,11 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
     event.preventDefault();
     setBusy(true);
     setNotice("");
+    setAvailability(null);
+    setSelected([]);
+    setSelectedTime("");
+    setSelectedTherapistId("");
+    setSelectedPlanKey("");
     try {
       const data = await api<any>("/api/patient/login", {
         method: "POST",
@@ -206,14 +220,15 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
       });
       if (data.status === "pending") {
         setPatient(null);
-        setAvailability(null);
+        setBooking(null);
+        setStep("rules");
         setNotice(data.message);
         return;
       }
       setPatient(data.patient);
       setBooking(data.booking);
-      setRulesReady(Boolean(data.patient.rules_accepted_at || data.booking));
-      if (data.patient.rules_accepted_at || data.booking) await loadAvailability(data.patient.id);
+      setStep("rules");
+      window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
       setNotice(errorMessage(error));
     } finally {
@@ -221,35 +236,46 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
     }
   }
 
-  async function loadAvailability(patientId = patient?.id ?? "") {
-    if (!patientId) return;
+  async function loadAvailability(patientId = patient?.id ?? "", preserveSelection = true) {
+    if (!patientId) return null;
     const data = await api<Availability>(`/api/patient/availability?patientId=${encodeURIComponent(patientId)}`);
     setAvailability(data);
     setBooking(data.booking);
     if (data.booking?.appointments) {
-      setSelected(
-        data.booking.appointments.map((item) => {
-          const therapistId = item.therapistId ?? (item as any).therapist_id;
-          return {
-          date: item.date,
-          time: item.time,
-          therapistId,
-          therapistAlias: data.therapists.find((therapist) => therapist.id === therapistId)?.alias,
-          therapist_name: item.therapist_name,
-          session_no: item.session_no,
-        };
-        }),
-      );
+      setSelected(data.booking.appointments.map((item) => normalizeAppointment(item, data)));
+    } else if (!preserveSelection) {
+      setSelected([]);
     }
+    return data;
   }
 
   async function acceptRules() {
     if (!patient) return;
     setBusy(true);
+    setNotice("");
     try {
       await api("/api/patient/accept-rules", { method: "POST", body: { patientId: patient.id } });
-      setRulesReady(true);
+      if (booking) {
+        await loadAvailability(patient.id);
+        setStep("summary");
+      } else {
+        await loadAvailability(patient.id, false);
+        setStep("time");
+      }
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshAvailability() {
+    if (!patient) return;
+    setBusy(true);
+    try {
       await loadAvailability(patient.id);
+      setNotice("已更新最新名額。若有時段被其他人預約，系統會在確認前再次檢查。");
     } catch (error) {
       setNotice(errorMessage(error));
     } finally {
@@ -275,8 +301,10 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
         body: { patientId: patient.id, appointments: selected },
       });
       setBooking(data.booking);
-      await loadAvailability(patient.id);
+      setSelected(data.booking.appointments.map((item) => normalizeAppointment(item, availability)));
+      setStep("summary");
       setNotice("預約已確認，以下是你的療程時間。");
+      window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
       setNotice(errorMessage(error));
       await loadAvailability(patient.id);
@@ -285,11 +313,53 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
     }
   }
 
-  const weekDates = availability?.dates.slice(weekIndex * 4, weekIndex * 4 + 4) ?? [];
-  const maxWeek = Math.max(0, Math.ceil((availability?.dates.length ?? 0) / 4) - 1);
+  function chooseTime(time: string) {
+    setSelectedTime(time);
+    setSelectedTherapistId("");
+    setSelected([]);
+    setSelectedPlanKey("");
+    setStep("therapist");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function chooseTherapist(therapistId: string) {
+    setSelectedTherapistId(therapistId);
+    setSelected([]);
+    setSelectedPlanKey("");
+    setStep("plan");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function choosePlan(plan: PlanOption) {
+    setSelected(plan.appointments);
+    setSelectedPlanKey(plan.key);
+    setStep("review");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function clearDraft() {
+    setSelected([]);
+    setSelectedPlanKey("");
+    setStep(selectedTherapistId ? "plan" : selectedTime ? "therapist" : "time");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  const timeOptions = useMemo(() => (availability ? getTimeOptions(availability) : []), [availability]);
+  const therapistOptions = useMemo(
+    () => (availability && selectedTime ? getTherapistOptions(availability, selectedTime) : []),
+    [availability, selectedTime],
+  );
+  const planOptions = useMemo(
+    () => (availability && selectedTime && selectedTherapistId ? getPlanOptions(availability, selectedTime, selectedTherapistId) : []),
+    [availability, selectedTime, selectedTherapistId],
+  );
+  const customDates = useMemo(
+    () => (availability && selectedTime && selectedTherapistId ? getDateChoices(availability, selectedTime, selectedTherapistId) : []),
+    [availability, selectedTime, selectedTherapistId],
+  );
 
   return (
-    <section className="stack">
+    <section className="stack patient-flow">
       <div className="section-title">
         <button className="ghost-button compact" onClick={() => go("home")} type="button">
           <ChevronLeft size={18} />
@@ -332,7 +402,7 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
         </section>
       )}
 
-      {patient && !rulesReady && (
+      {patient && step === "rules" && (
         <section className="panel narrow">
           <div className="panel-heading">
             <ClipboardCheck size={24} />
@@ -345,98 +415,161 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
             <span>每位就診者由後台預先設定療程種類、治療師性別限制及堂數。</span>
             <span>可選星期二至星期五；同一星期最多兩堂，兩堂之間最少相隔一日。</span>
             <span>確認後整個療程會固定同一位治療師及同一個時間。</span>
-            <span>如不懂操作，可按「致電求助」由職員協助預約。</span>
+            <span>最後確認後，已預約日期不可自行更改；如需協助請致電求助。</span>
+            {booking && <span>你已有已確認預約；同意規則後只會顯示療程摘要，不可在前台自行改期。</span>}
           </div>
           <button className="primary-button" disabled={busy} onClick={acceptRules} type="button">
             <ShieldCheck size={18} />
-            我已明白並開始選擇
+            我已明白並繼續
           </button>
         </section>
       )}
 
-      {patient && rulesReady && availability && (
-        <section className="booking-layout">
-          <aside className="panel booking-side">
-            <p className="eyebrow">患者條件</p>
-            <h2>{patient.display_name}</h2>
-            <div className="info-list">
-              <span>{patient.service_area} / {patient.subtype}</span>
-              <span>{genderPreferenceText(patient.gender_preference)}</span>
-              <span>需預約 {patient.session_count} 堂</span>
-              <span>{lockedSummary(selected)}</span>
-            </div>
-            <div className="selected-list">
-              {selected.length === 0 ? (
-                <p>請在右方時間表逐堂點選。</p>
-              ) : (
-                selected.map((item, index) => (
-                  <div key={`${item.date}-${item.time}-${item.therapistId}`}>
-                    <strong>第 {index + 1} 堂</strong>
-                    <span>{formatDate(item.date)} {weekdayText(item.date)} {item.time}</span>
-                    <small>{aliasFor(availability, item.therapistId)}</small>
-                  </div>
-                ))
-              )}
-            </div>
-            <button
-              className="primary-button wide"
-              disabled={busy || selected.length !== patient.session_count}
-              onClick={confirmBooking}
-              type="button"
-            >
-              <Check size={18} />
-              確認 {selected.length}/{patient.session_count} 堂
-            </button>
-            <button className="ghost-button wide" onClick={() => loadAvailability(patient.id)} type="button">
-              <RefreshCw size={18} />
-              重新整理可選時段
-            </button>
-          </aside>
+      {patient && availability && step !== "rules" && step !== "summary" && (
+        <section className="patient-mobile-shell">
+          <PatientProgress step={step} selectedTime={selectedTime} therapist={therapistById(availability, selectedTherapistId)} selected={selected} patient={patient} />
 
-          <section className="panel calendar-panel">
-            <div className="calendar-header">
-              <div>
-                <p className="eyebrow">可選時間</p>
-                <h2>{weekDates[0] ? `${formatDate(weekDates[0])} 至 ${formatDate(weekDates[weekDates.length - 1])}` : "沒有可選日期"}</h2>
+          {step === "time" && (
+            <section className="panel">
+              <div className="panel-heading">
+                <CalendarDays size={24} />
+                <div>
+                  <p className="eyebrow">第一步</p>
+                  <h2>先選一個固定治療時間</h2>
+                </div>
               </div>
-              <div className="week-controls">
-                <button disabled={weekIndex <= 0} onClick={() => setWeekIndex((value) => Math.max(0, value - 1))} type="button" aria-label="上一週">
-                  <ChevronLeft size={18} />
-                </button>
-                <button disabled={weekIndex >= maxWeek} onClick={() => setWeekIndex((value) => Math.min(maxWeek, value + 1))} type="button" aria-label="下一週">
-                  <ChevronRight size={18} />
+              <p className="flow-copy">只顯示可在 12 週內完成整個療程的時間。</p>
+              <div className="option-list">
+                {timeOptions.map((option) => (
+                  <button className="option-card" key={option.time} onClick={() => chooseTime(option.time)} type="button">
+                    <strong>{option.time}</strong>
+                    <span>{option.therapistCount} 位治療師可完成 · 最早 {formatDate(option.earliestDate)} {weekdayText(option.earliestDate)}</span>
+                  </button>
+                ))}
+              </div>
+              {!timeOptions.length && <Notice text="暫時沒有足夠名額完成整個療程，請致電求助。" />}
+              <PatientActionRow busy={busy} onRefresh={refreshAvailability} />
+            </section>
+          )}
+
+          {step === "therapist" && (
+            <section className="panel">
+              <div className="panel-heading">
+                <Users size={24} />
+                <div>
+                  <p className="eyebrow">第二步</p>
+                  <h2>選擇治療師代號</h2>
+                </div>
+              </div>
+              <p className="flow-copy">已選時間：{selectedTime}。選定後會鎖定同一治療師和同一時間。</p>
+              <div className="option-list">
+                {therapistOptions.map((option) => (
+                  <button className="option-card" key={option.therapist.id} onClick={() => chooseTherapist(option.therapist.id)} type="button">
+                    <strong>{option.therapist.alias}</strong>
+                    <span>可完成 {patient.session_count} 堂 · 最早 {formatDate(option.earliestDate)} {weekdayText(option.earliestDate)}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="button-row">
+                <button className="ghost-button" onClick={() => setStep("time")} type="button">返回選時段</button>
+              </div>
+              <PatientActionRow busy={busy} onRefresh={refreshAvailability} />
+            </section>
+          )}
+
+          {step === "plan" && (
+            <section className="panel">
+              <div className="panel-heading">
+                <ClipboardCheck size={24} />
+                <div>
+                  <p className="eyebrow">第三步</p>
+                  <h2>選擇療程日期方案</h2>
+                </div>
+              </div>
+              <p className="flow-copy">已鎖定 {aliasFor(availability, selectedTherapistId)} · {selectedTime}。</p>
+              <div className="plan-grid">
+                {planOptions.map((plan) => (
+                  <button className="plan-card" key={plan.key} onClick={() => choosePlan(plan)} type="button">
+                    <strong>{plan.title}</strong>
+                    <span>{plan.caption}</span>
+                    <small>{plan.appointments.map((item) => `${formatDate(item.date)} ${weekdayText(item.date)}`).join("、")}</small>
+                  </button>
+                ))}
+              </div>
+              <div className="button-row">
+                <button className="ghost-button" onClick={() => setStep("therapist")} type="button">返回選治療師</button>
+                <button className="ghost-button" onClick={() => setStep("custom")} type="button">自選日期</button>
+                <button className="danger-button" disabled={!selected.length} onClick={clearDraft} type="button">清除已選</button>
+              </div>
+              <PatientActionRow busy={busy} onRefresh={refreshAvailability} />
+            </section>
+          )}
+
+          {step === "custom" && (
+            <section className="panel">
+              <div className="panel-heading">
+                <CalendarDays size={24} />
+                <div>
+                  <p className="eyebrow">自選日期</p>
+                  <h2>逐堂選擇日期</h2>
+                </div>
+              </div>
+              <p className="flow-copy">治療師和時間已鎖定，只需選滿 {patient.session_count} 個合規日期。</p>
+              <div className="date-choice-grid">
+                {customDates.map((appointment) => {
+                  const state = customDateState(appointment, selected, patient.session_count);
+                  return (
+                    <button
+                      className={`date-choice ${state.selected ? "selected" : ""}`}
+                      disabled={state.disabled}
+                      key={appointment.date}
+                      onClick={() => setSelected((items) => toggleCustomDate(items, appointment))}
+                      type="button"
+                    >
+                      <strong>{formatDate(appointment.date)}</strong>
+                      <span>{weekdayText(appointment.date)} · {appointment.time}</span>
+                      <small>{state.selected ? "已選" : state.reason || aliasFor(availability, appointment.therapistId)}</small>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="button-row">
+                <button className="ghost-button" onClick={() => setStep("plan")} type="button">返回方案</button>
+                <button className="danger-button" disabled={!selected.length} onClick={clearDraft} type="button">清除已選</button>
+                <button className="primary-button" disabled={selected.length !== patient.session_count} onClick={() => { setSelectedPlanKey("custom"); setStep("review"); }} type="button">
+                  檢視 {selected.length}/{patient.session_count} 堂
                 </button>
               </div>
-            </div>
-            <PatientCalendar
-              availability={availability}
-              dates={weekDates}
-              selected={selected}
-              setSelected={setSelected}
-            />
-          </section>
+              <PatientActionRow busy={busy} onRefresh={refreshAvailability} />
+            </section>
+          )}
+
+          {step === "review" && (
+            <section className="panel">
+              <div className="panel-heading">
+                <Check size={24} />
+                <div>
+                  <p className="eyebrow">最後確認</p>
+                  <h2>確認後不可自行更改日期</h2>
+                </div>
+              </div>
+              <AppointmentSummary appointments={selected} availability={availability} />
+              <div className="button-row">
+                <button className="ghost-button" onClick={() => setStep(selectedPlanKey === "custom" ? "custom" : "plan")} type="button">返回修改</button>
+                <button className="danger-button" onClick={clearDraft} type="button">清除已選</button>
+                <button className="primary-button" disabled={busy || selected.length !== patient.session_count} onClick={confirmBooking} type="button">
+                  <Check size={18} />
+                  確認 {selected.length}/{patient.session_count} 堂
+                </button>
+              </div>
+              <PatientActionRow busy={busy} onRefresh={refreshAvailability} />
+            </section>
+          )}
         </section>
       )}
 
-      {booking && (
-        <section className="panel">
-          <div className="panel-heading">
-            <Check size={24} />
-            <div>
-              <p className="eyebrow">已確認預約</p>
-              <h2>療程摘要</h2>
-            </div>
-          </div>
-          <div className="summary-grid">
-            {booking.appointments?.map((item, index) => (
-              <div className="summary-card" key={`${item.date}-${item.time}-${index}`}>
-                <strong>第 {index + 1} 堂</strong>
-                <span>{formatDate(item.date)} {weekdayText(item.date)} {item.time}</span>
-                <small>{item.therapist_name || aliasFor(availability, (item as any).therapist_id || item.therapistId)}</small>
-              </div>
-            ))}
-          </div>
-        </section>
+      {patient && step === "summary" && booking && (
+        <PatientBookingSummary booking={booking} availability={availability} />
       )}
 
       {patient && notice && <Notice text={notice} />}
@@ -444,84 +577,80 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
   );
 }
 
-function PatientCalendar({
-  availability,
-  dates,
+function PatientProgress({
+  step,
+  selectedTime,
+  therapist,
   selected,
-  setSelected,
+  patient,
 }: {
-  availability: Availability;
-  dates: string[];
+  step: string;
+  selectedTime: string;
+  therapist?: Therapist;
   selected: Appointment[];
-  setSelected: React.Dispatch<React.SetStateAction<Appointment[]>>;
+  patient: Patient;
 }) {
-  const slotMap = useMemo(() => {
-    const map = new Map<string, Slot[]>();
-    for (const slot of availability.slots) {
-      const key = `${slot.date}|${slot.time}`;
-      map.set(key, [...(map.get(key) ?? []), slot]);
-    }
-    return map;
-  }, [availability.slots]);
-
-  function toggle(slot: Slot) {
-    const exact = selected.find((item) => sameAppointment(item, slot));
-    if (exact) {
-      setSelected((items) => items.filter((item) => !sameAppointment(item, slot)));
-      return;
-    }
-    const state = slotState(slot, selected, availability.patient.session_count);
-    if (state.disabled) return;
-    setSelected((items) =>
-      [...items, { date: slot.date, time: slot.time, therapistId: slot.therapistId, therapistAlias: slot.therapistAlias }]
-        .sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`)),
-    );
-  }
-
   return (
-    <div className="calendar-scroll">
-      <div className="patient-grid" style={{ gridTemplateColumns: `78px repeat(${Math.max(dates.length, 1)}, minmax(180px, 1fr))` }}>
-        <div className="grid-head">時間</div>
-        {dates.map((date) => (
-          <div className="grid-head" key={date}>
-            <strong>{weekdayText(date)}</strong>
-            <span>{formatDate(date)}</span>
-          </div>
-        ))}
-        {availability.times.map((time) => (
-          <div className="grid-row" key={time}>
-            <div className="time-label">{time}</div>
-            {dates.map((date) => {
-              const slots = slotMap.get(`${date}|${time}`) ?? [];
-              return (
-                <div className="slot-stack" key={`${date}-${time}`}>
-                  {slots.length === 0 ? (
-                    <span className="empty-slot">未開放</span>
-                  ) : (
-                    slots.map((slot) => {
-                      const state = slotState(slot, selected, availability.patient.session_count);
-                      return (
-                        <button
-                          className={`therapist-slot ${state.selected ? "selected" : ""}`}
-                          disabled={state.disabled}
-                          key={`${slot.therapistId}-${slot.date}-${slot.time}`}
-                          onClick={() => toggle(slot)}
-                          title={state.reason || `${slot.therapistAlias} 尚餘 ${Math.max(0, slot.capacity - slot.booked)} 位`}
-                          type="button"
-                        >
-                          <strong>{slot.therapistAlias}</strong>
-                          <span>{state.selected ? "已選" : state.reason || `餘 ${Math.max(0, slot.capacity - slot.booked)}`}</span>
-                        </button>
-                      );
-                    })
-                  )}
-                </div>
-              );
-            })}
-          </div>
+    <aside className="panel patient-progress">
+      <p className="eyebrow">患者條件</p>
+      <h2>{patient.display_name}</h2>
+      <div className="info-list">
+        <span>{patient.service_area} / {patient.subtype}</span>
+        <span>{genderPreferenceText(patient.gender_preference)}</span>
+        <span>需預約 {patient.session_count} 堂</span>
+        <span>{selectedTime ? `已選時間 ${selectedTime}` : "尚未選時間"}</span>
+        <span>{therapist ? `已鎖定 ${therapist.alias}` : "尚未選治療師"}</span>
+        <span>已選 {selected.length}/{patient.session_count} 堂</span>
+      </div>
+      <div className="step-pills">
+        {["time", "therapist", "plan", "review"].map((item) => (
+          <span className={step === item ? "active" : ""} key={item}>{stepLabel(item)}</span>
         ))}
       </div>
+    </aside>
+  );
+}
+
+function PatientActionRow({ busy, onRefresh }: { busy: boolean; onRefresh: () => void }) {
+  return (
+    <div className="button-row">
+      <button className="ghost-button" disabled={busy} onClick={onRefresh} type="button">
+        <RefreshCw size={18} />
+        更新最新名額
+      </button>
     </div>
+  );
+}
+
+function AppointmentSummary({ appointments, availability }: { appointments: Appointment[]; availability: Availability | null }) {
+  return (
+    <div className="summary-grid">
+      {appointments.map((item, index) => (
+        <div className="summary-card" key={`${item.date}-${item.time}-${index}`}>
+          <strong>第 {index + 1} 堂</strong>
+          <span>{formatDate(item.date)} {weekdayText(item.date)} {item.time}</span>
+          <small>{item.therapistAlias || aliasFor(availability, item.therapistId) || item.therapist_name}</small>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PatientBookingSummary({ booking, availability }: { booking: Booking; availability: Availability | null }) {
+  const appointments = booking.appointments.map((item) => normalizeAppointment(item, availability));
+  return (
+    <section className="panel patient-summary-panel">
+      <div className="panel-heading">
+        <Check size={24} />
+        <div>
+          <p className="eyebrow">已確認預約</p>
+          <h2>療程摘要</h2>
+        </div>
+      </div>
+      <div className="notice strong-notice">已預約日期不可改動。如需協助，請致電 {HELP_PHONE} 聯絡職員。</div>
+      <AppointmentSummary appointments={appointments} availability={availability} />
+      <div className="notice">物理治療前會收到衛生局信息提醒。</div>
+    </section>
   );
 }
 
@@ -1011,6 +1140,186 @@ function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; 
 
 function Notice({ text }: { text: string }) {
   return <div className="notice">{text}</div>;
+}
+
+function normalizeAppointment(item: any, availability: Availability | null): Appointment {
+  const therapistId = item.therapistId ?? item.therapist_id;
+  return {
+    id: item.id,
+    date: item.date,
+    time: item.time,
+    therapistId,
+    therapistAlias: availability?.therapists.find((therapist) => therapist.id === therapistId)?.alias,
+    therapist_name: item.therapist_name,
+    session_no: item.session_no,
+  };
+}
+
+function therapistById(availability: Availability | null, therapistId: string) {
+  return availability?.therapists.find((therapist) => therapist.id === therapistId);
+}
+
+function stepLabel(step: string) {
+  if (step === "time") return "選時間";
+  if (step === "therapist") return "選治療師";
+  if (step === "plan") return "選方案";
+  if (step === "review") return "確認";
+  return step;
+}
+
+function getDateChoices(availability: Availability, time: string, therapistId: string): Appointment[] {
+  return availability.slots
+    .filter((slot) => slot.available && slot.time === time && slot.therapistId === therapistId)
+    .sort((left, right) => left.date.localeCompare(right.date))
+    .map(slotToAppointment);
+}
+
+function getTimeOptions(availability: Availability) {
+  return availability.times
+    .map((time) => {
+      const therapistOptions = getTherapistOptions(availability, time);
+      const earliestDate = therapistOptions.map((option) => option.earliestDate).sort()[0];
+      return { time, therapistCount: therapistOptions.length, earliestDate };
+    })
+    .filter((option) => option.therapistCount > 0 && option.earliestDate);
+}
+
+function getTherapistOptions(availability: Availability, time: string) {
+  return availability.therapists
+    .map((therapist) => {
+      const choices = getDateChoices(availability, time, therapist.id);
+      const plan = buildGreedyPlan(choices, availability.patient.session_count);
+      return { therapist, earliestDate: plan[0]?.date ?? "", plan };
+    })
+    .filter((option) => option.plan.length === availability.patient.session_count);
+}
+
+function getPlanOptions(availability: Availability, time: string, therapistId: string): PlanOption[] {
+  const choices = getDateChoices(availability, time, therapistId);
+  const sessionCount = availability.patient.session_count;
+  const fastest = buildGreedyPlan(choices, sessionCount);
+  const balanced = buildBalancedPlan(choices, sessionCount);
+  const later = buildLaterPlan(choices, sessionCount);
+  return [
+    {
+      key: "fastest",
+      title: "最快完成",
+      caption: planCaption(fastest),
+      appointments: fastest,
+    },
+    {
+      key: "balanced",
+      title: "均衡安排",
+      caption: planCaption(balanced),
+      appointments: balanced,
+    },
+    {
+      key: "later",
+      title: "較後開始",
+      caption: planCaption(later),
+      appointments: later,
+    },
+  ].filter((plan) => plan.appointments.length === sessionCount);
+}
+
+function buildGreedyPlan(choices: Appointment[], sessionCount: number, startAfter = "") {
+  const picked: Appointment[] = [];
+  for (const choice of choices) {
+    if (startAfter && choice.date <= startAfter) continue;
+    if (canAddAppointment(picked, choice)) picked.push(choice);
+    if (picked.length === sessionCount) break;
+  }
+  return picked;
+}
+
+function buildBalancedPlan(choices: Appointment[], sessionCount: number) {
+  const picked: Appointment[] = [];
+  const byWeek = groupAppointmentsByWeek(choices);
+  for (const week of Object.keys(byWeek).sort()) {
+    const weekChoices = byWeek[week];
+    const preferredPairs = [
+      [2, 4],
+      [3, 5],
+      [2, 5],
+      [3],
+      [4],
+      [5],
+      [2],
+    ];
+    for (const pair of preferredPairs) {
+      for (const weekday of pair) {
+        const candidate = weekChoices.find((choice) => weekdayNumber(choice.date) === weekday);
+        if (candidate && canAddAppointment(picked, candidate)) picked.push(candidate);
+        if (picked.length === sessionCount || picked.filter((item) => weekKey(item.date) === week).length >= 2) break;
+      }
+      if (picked.length === sessionCount || picked.filter((item) => weekKey(item.date) === week).length >= 2) break;
+    }
+    if (picked.length === sessionCount) break;
+  }
+  return picked.length === sessionCount ? picked : buildGreedyPlan(choices, sessionCount);
+}
+
+function buildLaterPlan(choices: Appointment[], sessionCount: number) {
+  const fastest = buildGreedyPlan(choices, sessionCount);
+  if (!fastest.length) return [];
+  const firstWeek = weekKey(fastest[0].date);
+  const weekEnd = addDays(firstWeek, 6);
+  const later = buildGreedyPlan(choices, sessionCount, weekEnd);
+  return later.length === sessionCount ? later : buildGreedyPlan(choices.slice(2), sessionCount);
+}
+
+function canAddAppointment(selected: Appointment[], appointment: Appointment) {
+  if (selected.some((item) => item.date === appointment.date)) return false;
+  const sameWeek = selected.filter((item) => weekKey(item.date) === weekKey(appointment.date));
+  if (sameWeek.length >= 2) return false;
+  return !sameWeek.some((item) => Math.abs(daysBetween(item.date, appointment.date)) < 2);
+}
+
+function customDateState(appointment: Appointment, selected: Appointment[], sessionCount: number) {
+  const selectedExact = selected.some((item) => item.date === appointment.date);
+  if (selectedExact) return { selected: true, disabled: false, reason: "" };
+  if (selected.length >= sessionCount) return { selected: false, disabled: true, reason: "堂數已滿" };
+  if (!canAddAppointment(selected, appointment)) return { selected: false, disabled: true, reason: "不符合規則" };
+  return { selected: false, disabled: false, reason: "" };
+}
+
+function toggleCustomDate(selected: Appointment[], appointment: Appointment) {
+  const exists = selected.some((item) => item.date === appointment.date);
+  if (exists) return selected.filter((item) => item.date !== appointment.date);
+  return [...selected, appointment].sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function slotToAppointment(slot: Slot): Appointment {
+  return {
+    date: slot.date,
+    time: slot.time,
+    therapistId: slot.therapistId,
+    therapistAlias: slot.therapistAlias,
+  };
+}
+
+function planCaption(appointments: Appointment[]) {
+  if (!appointments.length) return "暫時未能排滿整個療程";
+  return `${formatDate(appointments[0].date)} 開始，${formatDate(appointments[appointments.length - 1].date)} 完成`;
+}
+
+function groupAppointmentsByWeek(appointments: Appointment[]) {
+  return appointments.reduce<Record<string, Appointment[]>>((groups, appointment) => {
+    const key = weekKey(appointment.date);
+    groups[key] = [...(groups[key] ?? []), appointment];
+    return groups;
+  }, {});
+}
+
+function weekdayNumber(date: string) {
+  const day = new Date(`${date}T00:00:00Z`).getUTCDay();
+  return day === 0 ? 7 : day;
+}
+
+function addDays(date: string, days: number) {
+  const next = new Date(`${date}T00:00:00Z`);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next.toISOString().slice(0, 10);
 }
 
 async function api<T = any>(path: string, options: { method?: string; body?: unknown; session?: string } = {}): Promise<T> {

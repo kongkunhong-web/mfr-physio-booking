@@ -355,9 +355,141 @@ select:focus {
   align-items: start;
 }
 
+.patient-mobile-shell {
+  display: grid;
+  grid-template-columns: minmax(260px, 330px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
 .booking-side {
   position: sticky;
   top: 12px;
+}
+
+.patient-progress {
+  position: sticky;
+  top: 12px;
+}
+
+.flow-copy {
+  margin: -4px 0 16px;
+  color: #586966;
+  font-weight: 800;
+}
+
+.option-list,
+.plan-grid,
+.date-choice-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.option-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.plan-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.date-choice-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.option-card,
+.plan-card,
+.date-choice {
+  display: grid;
+  gap: 5px;
+  min-height: 92px;
+  border: 1px solid #d2e2de;
+  border-radius: 8px;
+  padding: 14px;
+  color: #20312e;
+  text-align: left;
+  background: #fbfdfc;
+}
+
+.option-card:hover:not(:disabled),
+.plan-card:hover:not(:disabled),
+.date-choice:hover:not(:disabled) {
+  border-color: #1f6f65;
+  background: #eef9f6;
+}
+
+.option-card strong,
+.plan-card strong,
+.date-choice strong {
+  font-size: 1.18rem;
+}
+
+.option-card span,
+.plan-card span,
+.date-choice span {
+  color: #586966;
+  font-weight: 800;
+}
+
+.plan-card small,
+.date-choice small {
+  color: #1f6f65;
+  font-weight: 900;
+}
+
+.date-choice.selected {
+  color: #ffffff;
+  border-color: #1f6f65;
+  background: #1f6f65;
+}
+
+.date-choice.selected span,
+.date-choice.selected small {
+  color: #ffffff;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.button-row .primary-button,
+.button-row .ghost-button,
+.button-row .danger-button {
+  flex: 1 1 160px;
+}
+
+.step-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.step-pills span {
+  border-radius: 999px;
+  padding: 5px 9px;
+  color: #60706c;
+  background: #eef5f2;
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.step-pills span.active {
+  color: #ffffff;
+  background: #1f6f65;
+}
+
+.patient-summary-panel {
+  width: min(920px, 100%);
+  margin: 0 auto;
+}
+
+.strong-notice {
+  margin-bottom: 14px;
+  color: #8a4312;
 }
 
 .selected-list {
@@ -657,6 +789,7 @@ td {
 @media (max-width: 1060px) {
   .home-grid,
   .booking-layout,
+  .patient-mobile-shell,
   .grid-two,
   .grid-three,
   .metric-grid,
@@ -664,8 +797,15 @@ td {
     grid-template-columns: 1fr;
   }
 
-  .booking-side {
+  .booking-side,
+  .patient-progress {
     position: static;
+  }
+
+  .option-list,
+  .plan-grid,
+  .date-choice-grid {
+    grid-template-columns: 1fr;
   }
 
   .month-grid {
@@ -704,5 +844,9 @@ td {
 
   .patient-grid {
     min-width: 760px;
+  }
+
+  .button-row {
+    display: grid;
   }
 }

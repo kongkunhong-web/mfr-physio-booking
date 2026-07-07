@@ -40,7 +40,7 @@ type AppointmentInput = {
 };
 
 const ADMIN_SESSION = "demo-admin";
-const HELP_PHONE = "89305130";
+const HELP_PHONE = "8390 5180";
 const MAX_WEEKS = 12;
 
 const VALID_SUBTYPES: Record<ServiceArea, string[]> = {
