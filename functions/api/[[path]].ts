@@ -77,6 +77,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       return withAdmin(context, () => deleteRow(context.env.DB, "unavailable_blocks", pathId(path)));
     }
     if (method === "POST" && path === "admin/patients") return withAdmin(context, () => upsertPatient(context));
+    if (method === "GET" && path === "admin/patients/search") return withAdmin(context, () => searchPatients(context));
     if (method === "DELETE" && path.startsWith("admin/patients/")) {
       return withAdmin(context, () => deletePatientAccount(context.env.DB, pathId(path)));
     }
@@ -408,6 +409,55 @@ async function upsertPatient(context: EventContext<Env, string, unknown>) {
     isBooked ? existing.status : body.status || "draft",
   );
   return json({ ok: true, id });
+}
+
+async function searchPatients(context: EventContext<Env, string, unknown>) {
+  const url = new URL(context.request.url);
+  const q = (url.searchParams.get("q") ?? "").trim();
+  const status = url.searchParams.get("status") ?? "";
+  const area = normalizeServiceArea(url.searchParams.get("area") ?? "");
+  const doctorId = url.searchParams.get("doctorId") ?? "";
+  const limit = clamp(Number(url.searchParams.get("limit") || 100), 1, 300);
+  const where: string[] = [];
+  const values: unknown[] = [];
+
+  if (q) {
+    where.push("(p.patient_code LIKE ? OR p.display_name LIKE ? OR p.id_number LIKE ? OR p.phone LIKE ?)");
+    const like = `%${q}%`;
+    values.push(like, like, like, like);
+  }
+  if (status) {
+    where.push("p.status=?");
+    values.push(status);
+  }
+  if (area) {
+    where.push("p.service_area=?");
+    values.push(area);
+  }
+  if (doctorId) {
+    where.push("p.doctor_id=?");
+    values.push(doctorId);
+  }
+
+  const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const total = await first<{ count: number }>(
+    context.env.DB,
+    `SELECT COUNT(*) AS count FROM patients p ${clause}`,
+    ...values,
+  );
+  const patients = await all(
+    context.env.DB,
+    `SELECT p.*,d.code AS doctor_code,d.name AS doctor_name
+     FROM patients p
+     LEFT JOIN doctors d ON d.id=p.doctor_id
+     ${clause}
+     ORDER BY p.created_at DESC
+     LIMIT ?`,
+    ...values,
+    limit,
+  );
+
+  return json({ patients, total: Number(total?.count) || 0, limit });
 }
 
 async function activatePatients(context: EventContext<Env, string, unknown>) {

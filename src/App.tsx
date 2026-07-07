@@ -930,13 +930,36 @@ function PatientOverview({ data, session, reload, setNotice }: { data: AdminData
   const [area, setArea] = useState("");
   const [doctorId, setDoctorId] = useState("");
   const [editing, setEditing] = useState<any | null>(null);
-  const rows = data.patients.filter((patient) => {
-    const text = `${patient.patient_code} ${patient.display_name} ${patient.id_number ?? ""} ${patient.phone ?? ""}`.toLowerCase();
-    return (!query || text.includes(query.toLowerCase()))
-      && (!status || patient.status === status)
-      && (!area || patient.service_area === area)
-      && (!doctorId || patient.doctor_id === doctorId);
-  });
+  const [rows, setRows] = useState<Patient[]>(data.patients.slice(0, 100));
+  const [patientTotal, setPatientTotal] = useState(data.patients.length);
+  const [patientLoading, setPatientLoading] = useState(false);
+  const [patientNotice, setPatientNotice] = useState("");
+
+  async function loadPatients() {
+    setPatientLoading(true);
+    try {
+      const params = new URLSearchParams({ limit: "100" });
+      if (query.trim()) params.set("q", query.trim());
+      if (status) params.set("status", status);
+      if (area) params.set("area", area);
+      if (doctorId) params.set("doctorId", doctorId);
+      const result = await api<{ patients: Patient[]; total: number; limit: number }>(`/api/admin/patients/search?${params}`, { session });
+      setRows(result.patients ?? []);
+      setPatientTotal(result.total ?? 0);
+      setPatientNotice(result.total > result.limit ? `共有 ${result.total} 位符合條件，現顯示最新 ${result.limit} 位。請輸入更準確的代號、姓名、身份證或電話縮窄搜尋。` : "");
+    } catch (error) {
+      setPatientNotice(errorMessage(error));
+    } finally {
+      setPatientLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      loadPatients().catch((error) => setPatientNotice(errorMessage(error)));
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [query, status, area, doctorId, data.patients.length]);
 
   function startEdit(patient: Patient) {
     setEditing({
@@ -963,6 +986,7 @@ function PatientOverview({ data, session, reload, setNotice }: { data: AdminData
       setNotice(editing.status === "booked" ? "已更新患者登入資料；已預約患者的療程條件保持不變。" : "患者資料已更新。");
       setEditing(null);
       await reload(session);
+      await loadPatients();
     } catch (error) {
       setNotice(errorMessage(error));
     }
@@ -973,6 +997,7 @@ function PatientOverview({ data, session, reload, setNotice }: { data: AdminData
     await api(`/api/admin/patients/${encodeURIComponent(patient.id)}/cancel-booking`, { method: "POST", session });
     setNotice("已取消整個療程，患者可重新登入前台預約。");
     await reload(session);
+    await loadPatients();
   }
 
   async function deletePatient(patient: Patient) {
@@ -982,6 +1007,7 @@ function PatientOverview({ data, session, reload, setNotice }: { data: AdminData
     setNotice("患者帳號已刪除。");
     if (editing?.id === patient.id) setEditing(null);
     await reload(session);
+    await loadPatients();
   }
 
   return (
@@ -992,6 +1018,7 @@ function PatientOverview({ data, session, reload, setNotice }: { data: AdminData
         <label>大類<Select value={area} onChange={setArea} options={[["", "全部"], ["ELE", "ELE"], ["GYM", "GYM"]]} /></label>
         <label>轉介醫生<Select value={doctorId} onChange={setDoctorId} options={[["", "全部"], ...data.doctors.map((doctor) => [doctor.id, `${doctor.code} ${doctor.name}`])]} /></label>
       </div>
+      {(patientLoading || patientNotice) && <div className="notice">{patientLoading ? "正在搜尋患者..." : patientNotice}</div>}
 
       <section className="grid-two">
         <div className="panel">
@@ -1070,6 +1097,7 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
   const [unavailableForm, setUnavailableForm] = useState(() => emptyUnavailableForm(data.therapists[0]?.id ?? "", month));
   const [move, setMove] = useState({ appointmentId: "", therapistId: "", date: "", time: "" });
   const [moveTimes, setMoveTimes] = useState<Array<Record<string, any>>>([]);
+  const [panelNotice, setPanelNotice] = useState({ unavailable: "", capacity: "", reschedule: "", matrix: "" });
 
   async function loadCalendar() {
     const query = new URLSearchParams({ month });
@@ -1105,50 +1133,62 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
 
   async function saveCapacity(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await api("/api/admin/capacity", { method: "POST", session, body: capacity });
-    setNotice("每時間段可接納就診者數目已更新，患者前台會即時反映。");
-    await reload(session);
-    await loadCalendar();
+    try {
+      await api("/api/admin/capacity", { method: "POST", session, body: capacity });
+      setPanelNotice((current) => ({ ...current, capacity: "每時間段可接納就診者數目已更新，患者前台會即時反映。" }));
+      await reload(session);
+      await loadCalendar();
+    } catch (error) {
+      setPanelNotice((current) => ({ ...current, capacity: errorMessage(error) }));
+    }
   }
 
   async function saveUnavailable(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!therapistId) {
-      setNotice("請先選擇一位治療師，才可新增不可預約時段。");
+      setPanelNotice((current) => ({ ...current, unavailable: "請先選擇一位治療師，才可新增不可預約時段。" }));
       return;
     }
     if (!unavailableForm.start_date || !unavailableForm.reason.trim()) {
-      setNotice("請輸入日期及不可預約原因。");
+      setPanelNotice((current) => ({ ...current, unavailable: "請輸入日期及不可預約原因。" }));
       return;
     }
     if (!unavailableForm.all_day && (!unavailableForm.start_time || !unavailableForm.end_time)) {
-      setNotice("部分時段請選擇開始及結束時間。");
+      setPanelNotice((current) => ({ ...current, unavailable: "部分時段請選擇開始及結束時間。" }));
       return;
     }
-    await api("/api/admin/unavailable", {
-      method: "POST",
-      session,
-      body: {
-        ...unavailableForm,
-        therapist_id: therapistId,
-        end_date: unavailableForm.end_date || unavailableForm.start_date,
-        start_time: unavailableForm.all_day ? "" : unavailableForm.start_time,
-        end_time: unavailableForm.all_day ? "" : unavailableForm.end_time,
-      },
-    });
-    setNotice("不可預約時段已保存，月曆和前台名額已更新。");
-    setUnavailableForm(emptyUnavailableForm(therapistId, month));
-    await reload(session);
-    await loadCalendar();
+    try {
+      await api("/api/admin/unavailable", {
+        method: "POST",
+        session,
+        body: {
+          ...unavailableForm,
+          therapist_id: therapistId,
+          end_date: unavailableForm.end_date || unavailableForm.start_date,
+          start_time: unavailableForm.all_day ? "" : unavailableForm.start_time,
+          end_time: unavailableForm.all_day ? "" : unavailableForm.end_time,
+        },
+      });
+      setPanelNotice((current) => ({ ...current, unavailable: "不可預約時段已保存，月曆和前台名額已更新。" }));
+      setUnavailableForm(emptyUnavailableForm(therapistId, month));
+      await reload(session);
+      await loadCalendar();
+    } catch (error) {
+      setPanelNotice((current) => ({ ...current, unavailable: errorMessage(error) }));
+    }
   }
 
   async function removeUnavailable(id: string) {
     if (!window.confirm("確認刪除此不可預約時段？")) return;
-    await api(`/api/admin/unavailable/${encodeURIComponent(id)}`, { method: "DELETE", session });
-    setNotice("不可預約時段已刪除。");
-    setUnavailableForm(emptyUnavailableForm(therapistId, month));
-    await reload(session);
-    await loadCalendar();
+    try {
+      await api(`/api/admin/unavailable/${encodeURIComponent(id)}`, { method: "DELETE", session });
+      setPanelNotice((current) => ({ ...current, unavailable: "不可預約時段已刪除。" }));
+      setUnavailableForm(emptyUnavailableForm(therapistId, month));
+      await reload(session);
+      await loadCalendar();
+    } catch (error) {
+      setPanelNotice((current) => ({ ...current, unavailable: errorMessage(error) }));
+    }
   }
 
   function editUnavailable(row: Record<string, any>) {
@@ -1166,9 +1206,13 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
 
   async function reschedule(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await api("/api/admin/reschedule", { method: "POST", session, body: move });
-    setNotice("已改期或轉治療師。");
-    await loadCalendar();
+    try {
+      await api("/api/admin/reschedule", { method: "POST", session, body: move });
+      setPanelNotice((current) => ({ ...current, reschedule: "已改期或轉治療師。" }));
+      await loadCalendar();
+    } catch (error) {
+      setPanelNotice((current) => ({ ...current, reschedule: errorMessage(error) }));
+    }
   }
 
   async function seedWkDemo() {
@@ -1191,6 +1235,29 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
   const selectedTherapist = data.therapists.find((item) => item.id === therapistId);
   const selectedTherapistUnavailable = (calendar?.unavailable ?? []).filter((item) => item.therapist_id === therapistId);
   const unavailableTimes = selectedTherapist ? SERVICE_TIMES[selectedTherapist.service_area] : SERVICE_TIMES.ELE;
+
+  async function exportMatrix() {
+    if (!selectedTherapist) {
+      setPanelNotice((current) => ({ ...current, matrix: "請先選擇一位治療師才可匯出 Excel。" }));
+      return;
+    }
+    try {
+      await exportScheduleMatrixExcel({
+        bookings: calendar?.bookings ?? [],
+        capacities: data.capacities,
+        month,
+        therapist: selectedTherapist,
+        unavailable: calendar?.unavailable ?? [],
+      });
+      setPanelNotice((current) => ({ ...current, matrix: "Excel 已產生並開始下載。" }));
+    } catch (error) {
+      setPanelNotice((current) => ({ ...current, matrix: errorMessage(error) }));
+    }
+  }
+
+  function shiftMatrixMonth(delta: number) {
+    setMonth(addMonths(month, delta));
+  }
 
   return (
     <section className="stack">
@@ -1234,7 +1301,7 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
                   <div key={`${item.reason}-${index}`}><span><strong>{item.therapistName || item.therapistId}</strong><small>{item.time} · {item.reason}</small></span></div>
                 )) : <small className="muted">沒有不可預約時段</small>}
               </div>
-              <div className="plain-list">
+              <div className="plain-list vacancy-list">
                 <strong>剩餘空位時間</strong>
                 {selectedStats.vacancyTimes.length ? selectedStats.vacancyTimes.slice(0, 18).map((item, index) => (
                   <div key={`${item.therapistId}-${item.time}-${index}`}><span><strong>{item.time}</strong><small>{item.therapistName} · 剩 {item.remaining}/{item.capacity}</small></span></div>
@@ -1251,6 +1318,7 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
       <section className="grid-two">
         <div className="panel">
           <div className="panel-heading"><CalendarDays size={22} /><h2>治療師不可預約時段</h2></div>
+          {panelNotice.unavailable && <div className="notice panel-notice">{panelNotice.unavailable}</div>}
           {!therapistId || !selectedTherapist ? (
             <div className="notice">請先在上方選擇一位治療師，才可在同一頁新增或修改年假、會議、病假等不可預約時段。</div>
           ) : (
@@ -1294,6 +1362,7 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
       <section className="grid-two">
         <div className="panel">
           <div className="panel-heading"><Settings size={22} /><h2>每時間段可接納就診者數目</h2></div>
+          {panelNotice.capacity && <div className="notice panel-notice">{panelNotice.capacity}</div>}
           <form className="form-grid dense" onSubmit={saveCapacity}>
             <label>套用治療師<Select value={capacity.therapist_id} onChange={(value) => setCapacity({ ...capacity, therapist_id: value })} options={[["", "通用容量"], ...data.therapists.map((item) => [item.id, item.name])]} /></label>
             <label>大類<Select value={capacity.service_area} onChange={(value) => setCapacity({ ...capacity, service_area: value as ServiceArea, subtype: SUBTYPES[value as ServiceArea][0], time: SERVICE_TIMES[value as ServiceArea][0] })} options={[["ELE", "ELE"], ["GYM", "GYM"]]} /></label>
@@ -1306,6 +1375,7 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
         </div>
         <div className="panel">
           <div className="panel-heading"><RefreshCw size={22} /><h2>內部改期/轉治療師</h2></div>
+          {panelNotice.reschedule && <div className="notice panel-notice">{panelNotice.reschedule}</div>}
           <form className="form-grid dense" onSubmit={reschedule}>
             <label>預約堂 ID<Select value={move.appointmentId} onChange={(value) => {
               const booking = (calendar?.bookings ?? []).find((item: any) => item.id === value);
@@ -1326,7 +1396,16 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
         </div>
       </section>
       <section className="panel">
-        <div className="panel-heading"><ClipboardList size={22} /><h2>月度時間表矩陣</h2></div>
+        <div className="panel-heading matrix-toolbar">
+          <div><ClipboardList size={22} /><h2>月度時間表矩陣</h2></div>
+          <div className="button-row">
+            <button className="ghost-button compact" onClick={() => shiftMatrixMonth(-1)} type="button"><ChevronLeft size={16} />上一月</button>
+            <button className="ghost-button compact" onClick={() => setMonth(new Date().toISOString().slice(0, 7))} type="button">本月</button>
+            <button className="ghost-button compact" onClick={() => shiftMatrixMonth(1)} type="button">下一月<ChevronRight size={16} /></button>
+            <button className="primary-button compact" onClick={exportMatrix} type="button"><Save size={16} />匯出 Excel</button>
+          </div>
+        </div>
+        {panelNotice.matrix && <div className="notice panel-notice">{panelNotice.matrix}</div>}
         <MonthlyScheduleMatrix
           bookings={calendar?.bookings ?? []}
           capacities={data.capacities}
@@ -1536,6 +1615,98 @@ function MonthlyScheduleMatrix({
       </table>
     </div>
   );
+}
+
+async function exportScheduleMatrixExcel({
+  bookings,
+  capacities,
+  month,
+  therapist,
+  unavailable,
+}: {
+  bookings: Array<Record<string, any>>;
+  capacities: Array<Record<string, any>>;
+  month: string;
+  therapist: Therapist;
+  unavailable: Array<Record<string, any>>;
+}) {
+  const ExcelJS = await import("exceljs");
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "Hogan PT Demo";
+  workbook.created = new Date();
+  const sheet = workbook.addWorksheet("月度時間表矩陣", {
+    views: [{ state: "frozen", xSplit: 1, ySplit: 4 }],
+  });
+  const dates = monthDays(month).filter((date) => {
+    const weekday = weekdayNumber(date);
+    return weekday >= 1 && weekday <= 5;
+  });
+  const times = SERVICE_TIMES[therapist.service_area];
+  const bookingsBySlot = bookings
+    .filter((item) => item.therapist_id === therapist.id)
+    .reduce<Record<string, Array<Record<string, any>>>>((groups, item) => {
+      const key = `${item.date}|${item.time}`;
+      groups[key] = [...(groups[key] ?? []), item];
+      return groups;
+    }, {});
+  const monthBlocks = unavailable.filter((item) => item.therapist_id === therapist.id);
+  const lastColumn = dates.length + 1;
+
+  sheet.mergeCells(1, 1, 1, lastColumn);
+  sheet.getCell(1, 1).value = `${therapist.name} ${month} 月度時間表矩陣`;
+  sheet.getCell(1, 1).font = { bold: true, size: 16, color: { argb: "FF203733" } };
+  sheet.getCell(2, 1).value = "治療師";
+  sheet.getCell(2, 2).value = `${therapist.name} (${therapist.code || therapist.id})`;
+  sheet.getCell(3, 1).value = "月份";
+  sheet.getCell(3, 2).value = month;
+
+  const header = sheet.getRow(4);
+  header.getCell(1).value = "時間";
+  dates.forEach((date, index) => {
+    header.getCell(index + 2).value = `${formatDate(date)}\n${weekdayText(date)}`;
+  });
+  header.height = 34;
+  header.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: "FF203733" } };
+    cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE9F4F1" } };
+    cell.border = excelBorder();
+  });
+
+  times.forEach((time, rowIndex) => {
+    const row = sheet.getRow(rowIndex + 5);
+    row.getCell(1).value = time;
+    row.getCell(1).font = { bold: true, color: { argb: "FF1F6F65" } };
+    row.getCell(1).alignment = { vertical: "top", horizontal: "center" };
+    row.height = 78;
+    dates.forEach((date, dateIndex) => {
+      const weekday = weekdayNumber(date);
+      const slotBookings = bookingsBySlot[`${date}|${time}`] ?? [];
+      const blocks = monthBlocks.filter((item) => unavailableCoversSlot(item, date, time));
+      const capacity = weekday === 1 ? 0 : matrixCapacity(capacities, therapist, weekday, time);
+      const isFull = capacity > 0 && slotBookings.length >= capacity;
+      const lines = [
+        weekday === 1 ? "保留日" : capacity > 0 ? `${slotBookings.length}/${capacity}${isFull ? " 滿" : ""}` : "未開放",
+        ...blocks.map((block) => `${block.reason}${Number(block.all_day) ? "" : ` ${block.start_time}-${block.end_time}`}`),
+        ...slotBookings.map((booking) => `${booking.display_name || booking.patient_code || "未命名患者"}\n${booking.id_number || "未填身份證"}`),
+      ];
+      const cell = row.getCell(dateIndex + 2);
+      cell.value = lines.join("\n");
+      cell.alignment = { vertical: "top", horizontal: "left", wrapText: true };
+      cell.border = excelBorder();
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: weekday === 1 ? "FFF0F2F4" : blocks.length ? "FFFFE7DF" : isFull ? "FFFFF0EE" : "FFFFFFFF" },
+      };
+      cell.font = { bold: slotBookings.length > 0 || blocks.length > 0, color: { argb: blocks.length ? "FF9F2F2B" : "FF203733" } };
+    });
+  });
+
+  sheet.columns = [{ width: 10 }, ...dates.map(() => ({ width: 22 }))];
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  downloadBlob(blob, `${safeFileName(therapist.code || therapist.name)}-${month}-月度時間表矩陣.xlsx`);
 }
 
 function ListPanel({ title, rows, main, sub, onDelete }: { title: string; rows: any[]; main: string; sub: (row: any) => string; onDelete: (id: string) => void }) {
@@ -1753,6 +1924,12 @@ function addDays(date: string, days: number) {
   return next.toISOString().slice(0, 10);
 }
 
+function addMonths(month: string, delta: number) {
+  const [year, monthNumber] = month.split("-").map(Number);
+  const next = new Date(Date.UTC(year, monthNumber - 1 + delta, 1));
+  return `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
 async function api<T = any>(path: string, options: { method?: string; body?: unknown; session?: string } = {}): Promise<T> {
   const response = await fetch(path, {
     method: options.method ?? "GET",
@@ -1900,6 +2077,30 @@ function unavailableCoversSlot(block: Record<string, any>, date: string, time: s
   if (date < block.start_date || date > block.end_date) return false;
   if (Number(block.all_day)) return true;
   return time >= String(block.start_time ?? "") && time < String(block.end_time ?? "");
+}
+
+function excelBorder() {
+  return {
+    top: { style: "thin" as const, color: { argb: "FFD7E3DF" } },
+    left: { style: "thin" as const, color: { argb: "FFD7E3DF" } },
+    bottom: { style: "thin" as const, color: { argb: "FFD7E3DF" } },
+    right: { style: "thin" as const, color: { argb: "FFD7E3DF" } },
+  };
+}
+
+function safeFileName(value: string) {
+  return value.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, "-").slice(0, 60) || "therapist";
+}
+
+function downloadBlob(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function sumCount(rows: any[], key = "count") {
