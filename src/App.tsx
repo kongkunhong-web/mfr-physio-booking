@@ -181,7 +181,7 @@ function App() {
             <strong>物理治療排更預約</strong>
           </span>
         </button>
-        <span className="status-pill">Cloudflare D1 Demo</span>
+        <span className="status-pill">Hogan PT Demo</span>
       </header>
 
       {route === "home" && <Home go={go} />}
