@@ -301,7 +301,7 @@ async function adminLogin(context: EventContext<Env, string, unknown>) {
 
 async function adminBootstrap(context: EventContext<Env, string, unknown>) {
   const db = context.env.DB;
-  const [therapists, doctors, unavailable, patients, smsLogs, helpRequests, capacities, dashboard] = await Promise.all([
+  const [therapists, doctors, rawUnavailable, patients, smsLogs, helpRequests, capacities, dashboard] = await Promise.all([
     all(db, "SELECT * FROM therapists ORDER BY service_area,active DESC,name"),
     all(db, "SELECT * FROM doctors ORDER BY active DESC,code"),
     all(db, "SELECT u.*,t.name AS therapist_name FROM unavailable_blocks u LEFT JOIN therapists t ON t.id=u.therapist_id ORDER BY start_date DESC LIMIT 300"),
@@ -311,6 +311,7 @@ async function adminBootstrap(context: EventContext<Env, string, unknown>) {
     all(db, "SELECT * FROM slot_capacities ORDER BY service_area,subtype,weekday,time LIMIT 800"),
     buildDashboard(db),
   ]);
+  const unavailable = dedupeUnavailableBlocks(rawUnavailable);
 
   return json({ therapists, doctors, unavailable, patients, smsLogs, helpRequests, capacities, dashboard, subtypes: VALID_SUBTYPES, helpPhone: HELP_PHONE });
 }
@@ -354,6 +355,19 @@ async function upsertUnavailable(context: EventContext<Env, string, unknown>) {
   if (!body.therapist_id || !body.start_date) return json({ error: "請選擇治療師及日期" }, 400);
   const id = body.id || `unav-${crypto.randomUUID()}`;
   const allDay = body.all_day ? 1 : 0;
+  const duplicate = await first<{ id: string }>(
+    context.env.DB,
+    "SELECT id FROM unavailable_blocks WHERE therapist_id=? AND start_date=? AND end_date=? AND COALESCE(start_time,'')=? AND COALESCE(end_time,'')=? AND all_day=? AND reason=? AND id<>? LIMIT 1",
+    body.therapist_id,
+    body.start_date,
+    body.end_date || body.start_date,
+    allDay ? "" : String(body.start_time || ""),
+    allDay ? "" : String(body.end_time || ""),
+    allDay,
+    String(body.reason || "不可預約時段").trim(),
+    id,
+  );
+  if (duplicate) return json({ ok: true, id: duplicate.id, duplicate: true });
   await run(
     context.env.DB,
     "INSERT INTO unavailable_blocks (id,therapist_id,start_date,end_date,start_time,end_time,all_day,reason) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET therapist_id=excluded.therapist_id,start_date=excluded.start_date,end_date=excluded.end_date,start_time=excluded.start_time,end_time=excluded.end_time,all_day=excluded.all_day,reason=excluded.reason",
@@ -571,7 +585,7 @@ async function adminCalendar(context: EventContext<Env, string, unknown>) {
     therapistId,
     month,
   );
-  const unavailable = await all(
+  const rawUnavailable = await all(
     context.env.DB,
     "SELECT u.*,t.name AS therapist_name,t.code AS therapist_code FROM unavailable_blocks u LEFT JOIN therapists t ON t.id=u.therapist_id WHERE (? IS NULL OR u.therapist_id=?) AND u.start_date<=? AND u.end_date>=? ORDER BY u.start_date,u.start_time",
     therapistId,
@@ -579,6 +593,7 @@ async function adminCalendar(context: EventContext<Env, string, unknown>) {
     monthEnd,
     monthStart,
   );
+  const unavailable = dedupeUnavailableBlocks(rawUnavailable);
   const capacities = await all<any>(context.env.DB, "SELECT * FROM slot_capacities ORDER BY service_area,subtype,weekday,time");
   const { dailyStats, monthSummary } = buildCalendarStats({ month, therapists, capacities, bookings, unavailable });
   return json({ bookings, unavailable, dailyStats, monthSummary });
@@ -713,7 +728,7 @@ async function buildDashboard(db: D1Database) {
     all<any>(db, "SELECT * FROM booking_events WHERE status='confirmed' AND substr(date,1,7)=?", currentMonth),
     all<any>(db, "SELECT * FROM unavailable_blocks WHERE start_date<=? AND end_date>=?", monthEnd, monthStart),
   ]);
-  const monthStats = buildCalendarStats({ month: currentMonth, therapists, capacities, bookings, unavailable }).monthSummary;
+  const monthStats = buildCalendarStats({ month: currentMonth, therapists, capacities, bookings, unavailable: dedupeUnavailableBlocks(unavailable) }).monthSummary;
   return { statusCounts, doctorStats, therapistLoad, subtypeDemand, smsStats, incomplete, currentMonth, monthStats };
 }
 
@@ -966,6 +981,24 @@ function isUnavailable(blocks: any[], therapistId: string, date: string, time: s
     if (date < block.start_date || date > block.end_date) return false;
     if (Number(block.all_day)) return true;
     return time >= block.start_time && time < block.end_time;
+  });
+}
+
+function dedupeUnavailableBlocks<T extends Record<string, any>>(blocks: T[]) {
+  const seen = new Set<string>();
+  return blocks.filter((block) => {
+    const key = [
+      block.therapist_id,
+      block.start_date,
+      block.end_date,
+      block.start_time ?? "",
+      block.end_time ?? "",
+      Number(block.all_day) ? 1 : 0,
+      String(block.reason ?? "").trim(),
+    ].join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
 }
 
