@@ -97,6 +97,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     if (method === "GET" && path === "admin/reschedule-options") return withAdmin(context, () => adminRescheduleOptions(context));
     if (method === "GET" && path === "admin/calendar") return withAdmin(context, () => adminCalendar(context));
     if (method === "POST" && path === "admin/demo/wk-july-full") return withAdmin(context, () => seedWkJulyFullDemo(context.env.DB));
+    if (method === "POST" && path === "admin/demo/sparse-therapists") return withAdmin(context, () => seedSparseTherapistDemo(context.env.DB));
     if (method === "POST" && path === "admin/demo-reset") return withAdmin(context, () => demoReset(context.env.DB));
 
     return json({ error: "找不到 API 路由" }, 404);
@@ -755,6 +756,90 @@ async function seedWkJulyFullDemo(db: D1Database) {
     }
   }
   return json({ ok: true, createdPatients, createdSessions });
+}
+
+async function seedSparseTherapistDemo(db: D1Database) {
+  const [therapists, capacities, unavailable, bookedRows, doctor] = await Promise.all([
+    all<Therapist>(db, "SELECT * FROM therapists WHERE active=1 ORDER BY service_area,id"),
+    all<any>(db, "SELECT * FROM slot_capacities"),
+    all<any>(db, "SELECT * FROM unavailable_blocks"),
+    all<any>(db, "SELECT therapist_id,date,time,COUNT(*) AS count FROM booking_events WHERE status='confirmed' GROUP BY therapist_id,date,time"),
+    first<{ id: string }>(db, "SELECT id FROM doctors WHERE active=1 ORDER BY code LIMIT 1"),
+  ]);
+  if (!doctor) return json({ error: "找不到可用轉介醫生" }, 409);
+
+  const dates = monthDaysList("2026-08").filter((date) => [2, 3, 4, 5].includes(weekdayNumber(date)));
+  const bookedMap = new Map(bookedRows.map((row) => [`${row.therapist_id}|${row.date}|${row.time}`, Number(row.count) || 0]));
+  let createdPatients = 0;
+  let createdSessions = 0;
+  let skippedTherapists = 0;
+
+  for (let therapistIndex = 0; therapistIndex < therapists.length; therapistIndex += 1) {
+    const therapist = therapists[therapistIndex];
+    const subtype = therapist.service_area === "ELE" ? "ELE-1" : "GYM-1";
+    const patientCapacities = capacities.filter((row) => row.service_area === therapist.service_area && row.subtype === subtype);
+    const capacityMap = buildCapacityMap(patientCapacities);
+    const times = [...new Set(patientCapacities.map((row) => String(row.time)))].sort();
+    let therapistAdded = 0;
+
+    for (let sampleIndex = 1; sampleIndex <= 2; sampleIndex += 1) {
+      const patientId = `sparse-${therapist.id}-${sampleIndex}`;
+      const existing = await first<{ id: string }>(db, "SELECT id FROM patients WHERE id=?", patientId);
+      if (existing) continue;
+
+      let appointment: { date: string; time: string } | null = null;
+      for (let dateOffset = 0; dateOffset < dates.length && !appointment; dateOffset += 1) {
+        const date = dates[(therapistIndex * 2 + sampleIndex * 4 + dateOffset) % dates.length];
+        const weekday = weekdayNumber(date);
+        for (let timeOffset = 0; timeOffset < times.length; timeOffset += 1) {
+          const time = times[(therapistIndex * 3 + sampleIndex * 5 + timeOffset) % times.length];
+          const capacity = capacityFor(capacityMap, therapist.id, weekday, time);
+          const key = `${therapist.id}|${date}|${time}`;
+          if (capacity > (bookedMap.get(key) ?? 0) && !isUnavailable(unavailable, therapist.id, date, time)) {
+            appointment = { date, time };
+            bookedMap.set(key, (bookedMap.get(key) ?? 0) + 1);
+            break;
+          }
+        }
+      }
+      if (!appointment) continue;
+
+      const suffix = `${therapist.code}-${sampleIndex}`;
+      const bookingId = `sparse-book-${therapist.id}-${sampleIndex}`;
+      await run(
+        db,
+        "INSERT INTO patients (id,patient_code,id_number,phone,display_name,doctor_id,service_area,subtype,gender_preference,session_count,status,activated_at,first_login_at) VALUES (?,?,?,?,?,?,?,?,?,1,'booked',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+        patientId,
+        `SP-${suffix}`,
+        `SPARSE-${suffix}`,
+        `7000${String(therapistIndex * 10 + sampleIndex).padStart(4, "0")}`,
+        `${therapist.code} 示範患者 ${sampleIndex}`,
+        doctor.id,
+        therapist.service_area,
+        subtype,
+        "any",
+      );
+      await run(db, "INSERT INTO bookings (id,patient_id,status) VALUES (?,?, 'confirmed')", bookingId, patientId);
+      await run(
+        db,
+        "INSERT INTO booking_events (id,booking_id,patient_id,therapist_id,date,time,service_area,subtype,session_no,status) VALUES (?,?,?,?,?,?,?,?,1,'confirmed')",
+        `sparse-appt-${therapist.id}-${sampleIndex}`,
+        bookingId,
+        patientId,
+        therapist.id,
+        appointment.date,
+        appointment.time,
+        therapist.service_area,
+        subtype,
+      );
+      createdPatients += 1;
+      createdSessions += 1;
+      therapistAdded += 1;
+    }
+    if (!therapistAdded) skippedTherapists += 1;
+  }
+
+  return json({ ok: true, createdPatients, createdSessions, skippedTherapists });
 }
 
 async function demoReset(db: D1Database) {
