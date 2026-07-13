@@ -26,6 +26,7 @@ type Route = "home" | "patient" | "admin";
 type ServiceArea = "ELE" | "GYM";
 type Gender = "male" | "female" | "unknown";
 type GenderPreference = "any" | "male" | "female";
+type ScheduleGroup = "A" | "B";
 
 type Therapist = {
   id: string;
@@ -55,9 +56,10 @@ type Patient = {
   subtype: string;
   gender_preference: GenderPreference;
   session_count: number;
-  status: "draft" | "pending" | "active" | "booked";
+  status: "draft" | "pending" | "active" | "booked" | "expired";
   rules_accepted_at?: string | null;
   activated_at?: string | null;
+  first_login_at?: string | null;
   idNumberTail?: string;
   phoneTail?: string;
   id_number?: string;
@@ -92,6 +94,7 @@ type Availability = {
   therapists: Therapist[];
   slots: Slot[];
   booking: Booking | null;
+  courseWindow?: { start: string; end: string; firstLoginDate: string };
 };
 
 type Booking = {
@@ -154,6 +157,11 @@ const SERVICE_TIMES: Record<ServiceArea, string[]> = {
   ELE: ["08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00", "15:30", "16:00", "16:30", "17:00", "17:30", "18:00", "18:30"],
   GYM: ["08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00", "15:30", "16:00", "16:30", "17:00", "17:30", "18:00", "18:30"],
 };
+const SCHEDULE_GROUPS: Record<ScheduleGroup, { label: string; weekdays: number[] }> = {
+  A: { label: "A班：星期三及星期五", weekdays: [3, 5] },
+  B: { label: "B班：星期二及星期四", weekdays: [2, 4] },
+};
+const PATIENT_WEEKDAY_HEADERS = ["星期二", "星期三", "星期四", "星期五"];
 
 function App() {
   const [route, setRoute] = useState<Route>(() => routeFromPath(window.location.pathname));
@@ -222,7 +230,8 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
   const [patient, setPatient] = useState<Patient | null>(null);
   const [booking, setBooking] = useState<Booking | null>(null);
   const [availability, setAvailability] = useState<Availability | null>(null);
-  const [step, setStep] = useState<"rules" | "time" | "therapist" | "plan" | "custom" | "review" | "summary">("rules");
+  const [step, setStep] = useState<"rules" | "group" | "time" | "therapist" | "plan" | "custom" | "review" | "summary">("rules");
+  const [selectedGroup, setSelectedGroup] = useState<ScheduleGroup | "">("");
   const [selectedTime, setSelectedTime] = useState("");
   const [selectedTherapistId, setSelectedTherapistId] = useState("");
   const [selected, setSelected] = useState<Appointment[]>([]);
@@ -236,6 +245,7 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
     setNotice("");
     setAvailability(null);
     setSelected([]);
+    setSelectedGroup("");
     setSelectedTime("");
     setSelectedTherapistId("");
     setSelectedPlanKey("");
@@ -244,11 +254,11 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
         method: "POST",
         body: { idNumber, phone },
       });
-      if (data.status === "pending") {
+      if (data.status !== "active") {
         setPatient(null);
         setBooking(null);
         setStep("rules");
-        setNotice(data.message);
+        setNotice(data.message || "此帳號暫時未能使用網上預約。請致電求助。");
         return;
       }
       setPatient(data.patient);
@@ -286,7 +296,7 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
         setStep("summary");
       } else {
         await loadAvailability(patient.id, false);
-        setStep("time");
+        setStep("group");
       }
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
@@ -331,12 +341,28 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
       setStep("summary");
       setNotice("預約已確認，以下是你的療程時間。");
       window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch (error) {
-      setNotice(errorMessage(error));
+  } catch (error) {
       await loadAvailability(patient.id);
+      setSelected([]);
+      setSelectedGroup("");
+      setSelectedTime("");
+      setSelectedTherapistId("");
+      setSelectedPlanKey("");
+      setStep("group");
+      setNotice("已沒有位置或名額已更新，請重新選擇 A/B 班別。" );
     } finally {
       setBusy(false);
     }
+  }
+
+  function chooseGroup(group: ScheduleGroup) {
+    setSelectedGroup(group);
+    setSelectedTime("");
+    setSelectedTherapistId("");
+    setSelected([]);
+    setSelectedPlanKey("");
+    setStep("time");
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   function chooseTime(time: string) {
@@ -366,22 +392,22 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
   function clearDraft() {
     setSelected([]);
     setSelectedPlanKey("");
-    setStep(selectedTherapistId ? "plan" : selectedTime ? "therapist" : "time");
+    setStep(selectedTherapistId ? "plan" : selectedTime ? "therapist" : selectedGroup ? "time" : "group");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  const timeOptions = useMemo(() => (availability ? getTimeOptions(availability) : []), [availability]);
+  const timeOptions = useMemo(() => (availability && selectedGroup ? getTimeOptions(availability, selectedGroup) : []), [availability, selectedGroup]);
   const therapistOptions = useMemo(
-    () => (availability && selectedTime ? getTherapistOptions(availability, selectedTime) : []),
-    [availability, selectedTime],
+    () => (availability && selectedTime && selectedGroup ? getTherapistOptions(availability, selectedTime, selectedGroup) : []),
+    [availability, selectedTime, selectedGroup],
   );
   const planOptions = useMemo(
-    () => (availability && selectedTime && selectedTherapistId ? getPlanOptions(availability, selectedTime, selectedTherapistId) : []),
-    [availability, selectedTime, selectedTherapistId],
+    () => (availability && selectedTime && selectedTherapistId && selectedGroup ? getPlanOptions(availability, selectedTime, selectedTherapistId, selectedGroup) : []),
+    [availability, selectedTime, selectedTherapistId, selectedGroup],
   );
-  const customDates = useMemo(
-    () => (availability && selectedTime && selectedTherapistId ? getDateChoices(availability, selectedTime, selectedTherapistId) : []),
-    [availability, selectedTime, selectedTherapistId],
+  const customStartDates = useMemo(
+    () => (availability && selectedTime && selectedTherapistId && selectedGroup ? getCustomStartDates(availability, selectedTime, selectedTherapistId, selectedGroup) : []),
+    [availability, selectedTime, selectedTherapistId, selectedGroup],
   );
 
   return (
@@ -438,9 +464,10 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
             </div>
           </div>
           <div className="rule-cards">
-            <span>每位就診者由後台預先設定療程種類、治療師性別限制及堂數。</span>
-            <span>可選星期二至星期五；同一星期最多兩堂，兩堂之間最少相隔一日。</span>
-            <span>確認後整個療程會固定同一位治療師及同一個時間。</span>
+            <span>請先選擇 A 班或 B 班。A 班只在星期三及星期五治療；B 班只在星期二及星期四治療。</span>
+            <span>確認後整個療程會固定同一班別、同一位治療師及同一個時間。</span>
+            <span>選堂後如因私人原因缺席，恕不補堂。</span>
+            <span>如因病缺席物理治療，請提交政府認可醫院發出的證明；不論任何原因，整個療程最多可獲兩堂補堂。</span>
             <span>最後確認後，已預約日期不可自行更改；如需協助請致電求助。</span>
             {booking && <span>你已有已確認預約；同意規則後只會顯示療程摘要，不可在前台自行改期。</span>}
           </div>
@@ -453,18 +480,40 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
 
       {patient && availability && step !== "rules" && step !== "summary" && (
         <section className="patient-mobile-shell">
-          <PatientProgress step={step} selectedTime={selectedTime} therapist={therapistById(availability, selectedTherapistId)} selected={selected} patient={patient} />
+          <PatientProgress step={step} selectedGroup={selectedGroup} selectedTime={selectedTime} therapist={therapistById(availability, selectedTherapistId)} selected={selected} patient={patient} />
+
+          {step === "group" && (
+            <section className="panel">
+              <div className="panel-heading">
+                <CalendarDays size={24} />
+                <div>
+                  <p className="eyebrow">第一步</p>
+                  <h2>選擇治療班別</h2>
+                </div>
+              </div>
+              <p className="flow-copy">選定後整個療程不可轉班；星期一保留給後台操作。</p>
+              <div className="option-list">
+                {(Object.keys(SCHEDULE_GROUPS) as ScheduleGroup[]).map((group) => (
+                  <button className="option-card" key={group} onClick={() => chooseGroup(group)} type="button">
+                    <strong>{SCHEDULE_GROUPS[group].label}</strong>
+                    <span>請在固定班別內完成整個療程。</span>
+                  </button>
+                ))}
+              </div>
+              <PatientActionRow busy={busy} onRefresh={refreshAvailability} />
+            </section>
+          )}
 
           {step === "time" && (
             <section className="panel">
               <div className="panel-heading">
                 <CalendarDays size={24} />
                 <div>
-                  <p className="eyebrow">第一步</p>
+                  <p className="eyebrow">第二步</p>
                   <h2>先選一個固定治療時間</h2>
                 </div>
               </div>
-              <p className="flow-copy">只顯示可在 12 週內完成整個療程的時間。</p>
+              <p className="flow-copy">已選 {selectedGroup && SCHEDULE_GROUPS[selectedGroup].label}。只顯示可在八週療程窗口內完成整個療程的時間。</p>
               <div className="option-list">
                 {timeOptions.map((option) => (
                   <button className="option-card" key={option.time} onClick={() => chooseTime(option.time)} type="button">
@@ -474,6 +523,9 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
                 ))}
               </div>
               {!timeOptions.length && <Notice text="暫時沒有足夠名額完成整個療程，請致電求助。" />}
+              <div className="button-row">
+                <button className="ghost-button" onClick={() => setStep("group")} type="button">返回選班別</button>
+              </div>
               <PatientActionRow busy={busy} onRefresh={refreshAvailability} />
             </section>
           )}
@@ -483,11 +535,11 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
               <div className="panel-heading">
                 <Users size={24} />
                 <div>
-                  <p className="eyebrow">第二步</p>
+                  <p className="eyebrow">第三步</p>
                   <h2>選擇治療師代號</h2>
                 </div>
               </div>
-              <p className="flow-copy">已選時間：{selectedTime}。選定後會鎖定同一治療師和同一時間。</p>
+              <p className="flow-copy">已選 {selectedGroup && SCHEDULE_GROUPS[selectedGroup].label} · {selectedTime}。選定後會鎖定同一治療師和同一時間。</p>
               <div className="option-list">
                 {therapistOptions.map((option) => (
                   <button className="option-card" key={option.therapist.id} onClick={() => chooseTherapist(option.therapist.id)} type="button">
@@ -498,6 +550,7 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
               </div>
               <div className="button-row">
                 <button className="ghost-button" onClick={() => setStep("time")} type="button">返回選時段</button>
+                <button className="ghost-button" onClick={() => setStep("group")} type="button">返回選班別</button>
               </div>
               <PatientActionRow busy={busy} onRefresh={refreshAvailability} />
             </section>
@@ -508,11 +561,11 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
               <div className="panel-heading">
                 <ClipboardCheck size={24} />
                 <div>
-                  <p className="eyebrow">第三步</p>
+                  <p className="eyebrow">第四步</p>
                   <h2>選擇療程日期方案</h2>
                 </div>
               </div>
-              <p className="flow-copy">已鎖定 {aliasFor(availability, selectedTherapistId)} · {selectedTime}。</p>
+              <p className="flow-copy">已鎖定 {selectedGroup && SCHEDULE_GROUPS[selectedGroup].label} · {aliasFor(availability, selectedTherapistId)} · {selectedTime}。</p>
               <div className="plan-grid">
                 {planOptions.map((plan) => (
                   <button className="plan-card" key={plan.key} onClick={() => choosePlan(plan)} type="button">
@@ -524,7 +577,7 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
               </div>
               <div className="button-row">
                 <button className="ghost-button" onClick={() => setStep("therapist")} type="button">返回選治療師</button>
-                <button className="ghost-button" onClick={() => setStep("custom")} type="button">自選日期</button>
+                <button className="ghost-button" onClick={() => setStep("custom")} type="button">自選首堂日期</button>
                 <button className="danger-button" disabled={!selected.length} onClick={clearDraft} type="button">清除已選</button>
               </div>
               <PatientActionRow busy={busy} onRefresh={refreshAvailability} />
@@ -536,35 +589,38 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
               <div className="panel-heading">
                 <CalendarDays size={24} />
                 <div>
-                  <p className="eyebrow">自選日期</p>
-                  <h2>逐堂選擇日期</h2>
+                  <p className="eyebrow">自選首堂日期</p>
+                  <h2>選擇第一堂日期</h2>
                 </div>
               </div>
-              <p className="flow-copy">治療師和時間已鎖定，只需選滿 {patient.session_count} 個合規日期。</p>
-              <div className="date-choice-grid">
-                {customDates.map((appointment) => {
-                  const state = customDateState(appointment, selected, patient.session_count);
-                  return (
-                    <button
-                      className={`date-choice ${state.selected ? "selected" : ""}`}
-                      disabled={state.disabled}
-                      key={appointment.date}
-                      onClick={() => setSelected((items) => toggleCustomDate(items, appointment))}
-                      type="button"
-                    >
-                      <strong>{formatDate(appointment.date)}</strong>
-                      <span>{weekdayText(appointment.date)} · {appointment.time}</span>
-                      <small>{state.selected ? "已選" : state.reason || aliasFor(availability, appointment.therapistId)}</small>
-                    </button>
-                  );
-                })}
+              <p className="flow-copy">已選 {selectedGroup && SCHEDULE_GROUPS[selectedGroup].label}。選定第一堂後，系統會自動排滿其後 {patient.session_count - 1} 堂。</p>
+              <div className="schedule-weekday-headings" aria-hidden="true">
+                {PATIENT_WEEKDAY_HEADERS.map((label) => <span key={label}>{label}</span>)}
+              </div>
+              <div className="date-choice-grid schedule-date-grid">
+                {buildCustomDateGrid(availability, selectedTime, selectedTherapistId, selectedGroup as ScheduleGroup, customStartDates).map((item) => (
+                  <button
+                    className={`date-choice ${item.groupAllowed ? "" : "other-group"}`}
+                    disabled={!item.appointment || !item.canStart}
+                    key={item.date}
+                    onClick={() => {
+                      if (!item.appointment) return;
+                      const plan = buildGreedyPlan(getDateChoices(availability, selectedTime, selectedTherapistId, selectedGroup as ScheduleGroup), patient.session_count, addDays(item.date, -1));
+                      setSelected(plan);
+                      setSelectedPlanKey("custom");
+                      setStep("review");
+                      window.scrollTo({ top: 0, behavior: "smooth" });
+                    }}
+                    type="button"
+                  >
+                    <strong>{formatDate(item.date)}</strong>
+                    <span>{weekdayText(item.date)} · {selectedTime}</span>
+                    <small>{item.groupAllowed ? item.canStart ? "可作首堂" : item.reason || "無法完成療程" : `${selectedGroup === "A" ? "B" : "A"}班日期`}</small>
+                  </button>
+                ))}
               </div>
               <div className="button-row">
                 <button className="ghost-button" onClick={() => setStep("plan")} type="button">返回方案</button>
-                <button className="danger-button" disabled={!selected.length} onClick={clearDraft} type="button">清除已選</button>
-                <button className="primary-button" disabled={selected.length !== patient.session_count} onClick={() => { setSelectedPlanKey("custom"); setStep("review"); }} type="button">
-                  檢視 {selected.length}/{patient.session_count} 堂
-                </button>
               </div>
               <PatientActionRow busy={busy} onRefresh={refreshAvailability} />
             </section>
@@ -605,12 +661,14 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
 
 function PatientProgress({
   step,
+  selectedGroup,
   selectedTime,
   therapist,
   selected,
   patient,
 }: {
   step: string;
+  selectedGroup: ScheduleGroup | "";
   selectedTime: string;
   therapist?: Therapist;
   selected: Appointment[];
@@ -621,15 +679,14 @@ function PatientProgress({
       <p className="eyebrow">患者條件</p>
       <h2>{patient.display_name}</h2>
       <div className="info-list">
-        <span>{patient.service_area} / {patient.subtype}</span>
-        <span>{genderPreferenceText(patient.gender_preference)}</span>
         <span>需預約 {patient.session_count} 堂</span>
+        <span>{selectedGroup ? SCHEDULE_GROUPS[selectedGroup].label : "尚未選班別"}</span>
         <span>{selectedTime ? `已選時間 ${selectedTime}` : "尚未選時間"}</span>
         <span>{therapist ? `已鎖定 ${therapist.alias}` : "尚未選治療師"}</span>
         <span>已選 {selected.length}/{patient.session_count} 堂</span>
       </div>
       <div className="step-pills">
-        {["time", "therapist", "plan", "review"].map((item) => (
+        {["group", "time", "therapist", "plan", "review"].map((item) => (
           <span className={step === item ? "active" : ""} key={item}>{stepLabel(item)}</span>
         ))}
       </div>
@@ -1762,6 +1819,7 @@ function therapistById(availability: Availability | null, therapistId: string) {
 }
 
 function stepLabel(step: string) {
+  if (step === "group") return "選班別";
   if (step === "time") return "選時間";
   if (step === "therapist") return "選治療師";
   if (step === "plan") return "選方案";
@@ -1769,39 +1827,39 @@ function stepLabel(step: string) {
   return step;
 }
 
-function getDateChoices(availability: Availability, time: string, therapistId: string): Appointment[] {
+function getDateChoices(availability: Availability, time: string, therapistId: string, group: ScheduleGroup): Appointment[] {
   return availability.slots
-    .filter((slot) => slot.available && slot.time === time && slot.therapistId === therapistId)
+    .filter((slot) => slot.available && slot.time === time && slot.therapistId === therapistId && isGroupDate(slot.date, group))
     .sort((left, right) => left.date.localeCompare(right.date))
     .map(slotToAppointment);
 }
 
-function getTimeOptions(availability: Availability) {
+function getTimeOptions(availability: Availability, group: ScheduleGroup) {
   return availability.times
     .map((time) => {
-      const therapistOptions = getTherapistOptions(availability, time);
+      const therapistOptions = getTherapistOptions(availability, time, group);
       const earliestDate = therapistOptions.map((option) => option.earliestDate).sort()[0];
       return { time, therapistCount: therapistOptions.length, earliestDate };
     })
     .filter((option) => option.therapistCount > 0 && option.earliestDate);
 }
 
-function getTherapistOptions(availability: Availability, time: string) {
+function getTherapistOptions(availability: Availability, time: string, group: ScheduleGroup) {
   return availability.therapists
     .map((therapist) => {
-      const choices = getDateChoices(availability, time, therapist.id);
+      const choices = getDateChoices(availability, time, therapist.id, group);
       const plan = buildGreedyPlan(choices, availability.patient.session_count);
       return { therapist, earliestDate: plan[0]?.date ?? "", plan };
     })
     .filter((option) => option.plan.length === availability.patient.session_count);
 }
 
-function getPlanOptions(availability: Availability, time: string, therapistId: string): PlanOption[] {
-  const choices = getDateChoices(availability, time, therapistId);
+function getPlanOptions(availability: Availability, time: string, therapistId: string, group: ScheduleGroup): PlanOption[] {
+  const choices = getDateChoices(availability, time, therapistId, group);
   const sessionCount = availability.patient.session_count;
   const fastest = buildGreedyPlan(choices, sessionCount);
-  const balanced = buildBalancedPlan(choices, sessionCount);
-  const later = buildLaterPlan(choices, sessionCount);
+  const delayedOneWeek = fastest.length ? buildGreedyPlan(choices, sessionCount, addDays(fastest[0].date, 6)) : [];
+  const delayedTwoWeeks = fastest.length ? buildGreedyPlan(choices, sessionCount, addDays(fastest[0].date, 13)) : [];
   return [
     {
       key: "fastest",
@@ -1810,16 +1868,16 @@ function getPlanOptions(availability: Availability, time: string, therapistId: s
       appointments: fastest,
     },
     {
-      key: "balanced",
-      title: "均衡安排",
-      caption: planCaption(balanced),
-      appointments: balanced,
+      key: "delay-one-week",
+      title: "延後一週開始",
+      caption: planCaption(delayedOneWeek),
+      appointments: delayedOneWeek,
     },
     {
-      key: "later",
-      title: "較後開始",
-      caption: planCaption(later),
-      appointments: later,
+      key: "delay-two-weeks",
+      title: "延後兩週開始",
+      caption: planCaption(delayedTwoWeeks),
+      appointments: delayedTwoWeeks,
     },
   ].filter((plan) => plan.appointments.length === sessionCount);
 }
@@ -1834,61 +1892,47 @@ function buildGreedyPlan(choices: Appointment[], sessionCount: number, startAfte
   return picked;
 }
 
-function buildBalancedPlan(choices: Appointment[], sessionCount: number) {
-  const picked: Appointment[] = [];
-  const byWeek = groupAppointmentsByWeek(choices);
-  for (const week of Object.keys(byWeek).sort()) {
-    const weekChoices = byWeek[week];
-    const preferredPairs = [
-      [2, 4],
-      [3, 5],
-      [2, 5],
-      [3],
-      [4],
-      [5],
-      [2],
-    ];
-    for (const pair of preferredPairs) {
-      for (const weekday of pair) {
-        const candidate = weekChoices.find((choice) => weekdayNumber(choice.date) === weekday);
-        if (candidate && canAddAppointment(picked, candidate)) picked.push(candidate);
-        if (picked.length === sessionCount || picked.filter((item) => weekKey(item.date) === week).length >= 2) break;
-      }
-      if (picked.length === sessionCount || picked.filter((item) => weekKey(item.date) === week).length >= 2) break;
-    }
-    if (picked.length === sessionCount) break;
-  }
-  return picked.length === sessionCount ? picked : buildGreedyPlan(choices, sessionCount);
-}
-
-function buildLaterPlan(choices: Appointment[], sessionCount: number) {
-  const fastest = buildGreedyPlan(choices, sessionCount);
-  if (!fastest.length) return [];
-  const firstWeek = weekKey(fastest[0].date);
-  const weekEnd = addDays(firstWeek, 6);
-  const later = buildGreedyPlan(choices, sessionCount, weekEnd);
-  return later.length === sessionCount ? later : buildGreedyPlan(choices.slice(2), sessionCount);
-}
-
 function canAddAppointment(selected: Appointment[], appointment: Appointment) {
   if (selected.some((item) => item.date === appointment.date)) return false;
   const sameWeek = selected.filter((item) => weekKey(item.date) === weekKey(appointment.date));
   if (sameWeek.length >= 2) return false;
-  return !sameWeek.some((item) => Math.abs(daysBetween(item.date, appointment.date)) < 2);
+  return true;
 }
 
-function customDateState(appointment: Appointment, selected: Appointment[], sessionCount: number) {
-  const selectedExact = selected.some((item) => item.date === appointment.date);
-  if (selectedExact) return { selected: true, disabled: false, reason: "" };
-  if (selected.length >= sessionCount) return { selected: false, disabled: true, reason: "堂數已滿" };
-  if (!canAddAppointment(selected, appointment)) return { selected: false, disabled: true, reason: "不符合規則" };
-  return { selected: false, disabled: false, reason: "" };
+function getCustomStartDates(availability: Availability, time: string, therapistId: string, group: ScheduleGroup) {
+  const choices = getDateChoices(availability, time, therapistId, group);
+  return choices.filter((choice) => {
+    const plan = buildGreedyPlan(choices, availability.patient.session_count, addDays(choice.date, -1));
+    return plan.length === availability.patient.session_count && plan[0]?.date === choice.date;
+  });
 }
 
-function toggleCustomDate(selected: Appointment[], appointment: Appointment) {
-  const exists = selected.some((item) => item.date === appointment.date);
-  if (exists) return selected.filter((item) => item.date !== appointment.date);
-  return [...selected, appointment].sort((left, right) => left.date.localeCompare(right.date));
+function buildCustomDateGrid(
+  availability: Availability,
+  time: string,
+  therapistId: string,
+  group: ScheduleGroup,
+  customStartDates: Appointment[],
+) {
+  const choices = getDateChoices(availability, time, therapistId, group);
+  const choicesByDate = new Map(choices.map((choice) => [choice.date, choice]));
+  const startDates = new Set(customStartDates.map((choice) => choice.date));
+  return availability.dates.map((date) => {
+    const groupAllowed = isGroupDate(date, group);
+    const appointment = choicesByDate.get(date);
+    const sourceSlot = availability.slots.find((slot) => slot.date === date && slot.time === time && slot.therapistId === therapistId);
+    return {
+      date,
+      groupAllowed,
+      appointment,
+      canStart: Boolean(appointment && startDates.has(date)),
+      reason: sourceSlot?.reason || "此日期未能排滿整個療程",
+    };
+  });
+}
+
+function isGroupDate(date: string, group: ScheduleGroup) {
+  return SCHEDULE_GROUPS[group].weekdays.includes(weekdayNumber(date));
 }
 
 function slotToAppointment(slot: Slot): Appointment {
@@ -1903,14 +1947,6 @@ function slotToAppointment(slot: Slot): Appointment {
 function planCaption(appointments: Appointment[]) {
   if (!appointments.length) return "暫時未能排滿整個療程";
   return `${formatDate(appointments[0].date)} 開始，${formatDate(appointments[appointments.length - 1].date)} 完成`;
-}
-
-function groupAppointmentsByWeek(appointments: Appointment[]) {
-  return appointments.reduce<Record<string, Appointment[]>>((groups, appointment) => {
-    const key = weekKey(appointment.date);
-    groups[key] = [...(groups[key] ?? []), appointment];
-    return groups;
-  }, {});
 }
 
 function weekdayNumber(date: string) {

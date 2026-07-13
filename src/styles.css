@@ -448,6 +448,41 @@ select:focus {
   color: #ffffff;
 }
 
+.schedule-weekday-headings {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.schedule-weekday-headings span {
+  padding: 8px;
+  border-radius: 6px;
+  color: #40514c;
+  background: #e7f0ed;
+  font-weight: 900;
+  text-align: center;
+}
+
+.schedule-date-grid .date-choice {
+  min-height: 108px;
+}
+
+.date-choice.other-group,
+.date-choice:disabled {
+  color: #73807d;
+  border-color: #dde5e2;
+  background: #f1f4f3;
+  cursor: not-allowed;
+}
+
+.date-choice.other-group span,
+.date-choice.other-group small,
+.date-choice:disabled span,
+.date-choice:disabled small {
+  color: #73807d;
+}
+
 .button-row {
   display: flex;
   flex-wrap: wrap;
@@ -1078,9 +1113,10 @@ td {
 
   .option-list,
   .plan-grid,
-  .date-choice-grid {
+  .date-choice-grid:not(.schedule-date-grid) {
     grid-template-columns: 1fr;
   }
+
 
   .month-grid {
     grid-template-columns: repeat(4, minmax(120px, 1fr));

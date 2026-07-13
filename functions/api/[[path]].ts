@@ -26,11 +26,12 @@ type Patient = {
   subtype: string;
   gender_preference: GenderPreference;
   session_count: number;
-  status: "draft" | "pending" | "active" | "booked";
+  status: "draft" | "pending" | "active" | "booked" | "expired";
   batch_id?: string | null;
   rules_accepted_at?: string | null;
   created_at?: string;
   activated_at?: string | null;
+  first_login_at?: string | null;
 };
 
 type AppointmentInput = {
@@ -41,7 +42,13 @@ type AppointmentInput = {
 
 const ADMIN_SESSION = "demo-admin";
 const HELP_PHONE = "8390 5180";
-const MAX_WEEKS = 12;
+const COURSE_WEEKS = 8;
+const ACTIVATION_DEADLINE_DAYS = 14;
+const SCHEDULE_GROUPS: Record<"A" | "B", readonly number[]> = {
+  A: [3, 5],
+  B: [2, 4],
+} as const;
+type ScheduleGroup = keyof typeof SCHEDULE_GROUPS;
 
 const VALID_SUBTYPES: Record<ServiceArea, string[]> = {
   ELE: ["ELE-1", "ELE-2", "ELE-3"],
@@ -160,12 +167,42 @@ async function patientLogin(context: EventContext<Env, string, unknown>) {
     String(body.phone ?? "").trim(),
   );
 
-  if (!patient || !["active", "booked"].includes(patient.status)) {
+  if (!patient) {
     return json({
       status: "pending",
       message: "暫時未查到已開通的線上預約權限。請等候醫院短訊，或按「致電求助」由職員協助。",
       helpPhone: HELP_PHONE,
     });
+  }
+
+  if (patient.status === "active" && isActivationExpired(patient)) {
+    await run(context.env.DB, "UPDATE patients SET status='expired' WHERE id=?", patient.id);
+    return json({
+      status: "expired",
+      message: `此帳號的網上報名期限已過，請致電 ${HELP_PHONE} 由職員協助重新安排。`,
+      helpPhone: HELP_PHONE,
+    });
+  }
+
+  if (patient.status === "expired") {
+    return json({
+      status: "expired",
+      message: `此帳號的網上報名期限已過，請致電 ${HELP_PHONE} 由職員協助重新安排。`,
+      helpPhone: HELP_PHONE,
+    });
+  }
+
+  if (!["active", "booked"].includes(patient.status)) {
+    return json({
+      status: "pending",
+      message: "暫時未查到已開通的線上預約權限。請等候醫院短訊，或按「致電求助」由職員協助。",
+      helpPhone: HELP_PHONE,
+    });
+  }
+
+  if (!patient.first_login_at) {
+    await run(context.env.DB, "UPDATE patients SET first_login_at=CURRENT_TIMESTAMP WHERE id=?", patient.id);
+    patient.first_login_at = new Date().toISOString();
   }
 
   return json({
@@ -185,11 +222,20 @@ async function acceptRules(context: EventContext<Env, string, unknown>) {
 async function patientAvailability(context: EventContext<Env, string, unknown>) {
   const url = new URL(context.request.url);
   const patientId = url.searchParams.get("patientId");
-  const start = url.searchParams.get("start") ?? todayKey();
   if (!patientId) return json({ error: "缺少 patientId" }, 400);
 
   const patient = await first<Patient>(context.env.DB, "SELECT * FROM patients WHERE id=?", patientId);
   if (!patient || !["active", "booked"].includes(patient.status)) return json({ error: "此帳號尚未開通" }, 403);
+  if (patient.status === "active" && isActivationExpired(patient)) {
+    await run(context.env.DB, "UPDATE patients SET status='expired' WHERE id=?", patient.id);
+    return json({ error: `此帳號的網上報名期限已過，請致電 ${HELP_PHONE} 由職員協助。` }, 403);
+  }
+  if (!patient.first_login_at) {
+    await run(context.env.DB, "UPDATE patients SET first_login_at=CURRENT_TIMESTAMP WHERE id=?", patient.id);
+    patient.first_login_at = new Date().toISOString();
+  }
+  const courseWindow = patientCourseWindow(patient);
+  if (!courseWindow) return json({ error: "未能建立療程日期窗口，請致電求助。" }, 409);
 
   const [therapists, capacities, unavailable, bookedRows, booking] = await Promise.all([
     therapistsForPatient(context.env.DB, patient),
@@ -210,12 +256,13 @@ async function patientAvailability(context: EventContext<Env, string, unknown>) 
   const aliases = aliasMap(therapists, todayKey());
   const capacityMap = buildCapacityMap(capacities);
   const bookedMap = new Map(bookedRows.map((row) => [`${row.therapist_id}|${row.date}|${row.time}`, Number(row.count) || 0]));
-  const dates = nextBookableDates(start, MAX_WEEKS);
+  const dates = courseDates(courseWindow.start, courseWindow.end);
   const times = [...new Set(capacities.map((row) => String(row.time)))].sort();
   const slots = [];
 
   for (const date of dates) {
     const weekday = weekdayNumber(date);
+    const isBeforeFirstLogin = date < dateKey(patient.first_login_at!);
     for (const time of times) {
       for (const therapist of therapists) {
         const capacity = capacityFor(capacityMap, therapist.id, weekday, time);
@@ -228,8 +275,8 @@ async function patientAvailability(context: EventContext<Env, string, unknown>) 
           therapistAlias: aliases.get(therapist.id) ?? therapist.code,
           capacity,
           booked,
-          available: !blocked && booked < capacity,
-          reason: blocked ? "不可預約時段" : booked >= capacity ? "名額已滿" : "",
+          available: !isBeforeFirstLogin && !blocked && booked < capacity,
+          reason: isBeforeFirstLogin ? "尚未開放" : blocked ? "不可預約時段" : booked >= capacity ? "名額已滿" : "",
         });
       }
     }
@@ -242,6 +289,7 @@ async function patientAvailability(context: EventContext<Env, string, unknown>) 
     therapists: therapists.map((therapist) => ({ ...therapist, alias: aliases.get(therapist.id) })),
     slots,
     booking,
+    courseWindow,
   });
 }
 
@@ -249,6 +297,10 @@ async function patientBook(context: EventContext<Env, string, unknown>) {
   const body = await readJson<{ patientId: string; appointments: AppointmentInput[] }>(context.request);
   const patient = await first<Patient>(context.env.DB, "SELECT * FROM patients WHERE id=?", body.patientId);
   if (!patient || !["active", "booked"].includes(patient.status)) return json({ error: "此帳號尚未開通" }, 403);
+  if (patient.status === "active" && isActivationExpired(patient)) {
+    await run(context.env.DB, "UPDATE patients SET status='expired' WHERE id=?", patient.id);
+    return json({ error: `此帳號的網上報名期限已過，請致電 ${HELP_PHONE} 由職員協助。` }, 403);
+  }
 
   const validation = await validateAppointments(context.env.DB, patient, body.appointments);
   if (!validation.ok) return json({ error: validation.error, conflicts: validation.conflicts ?? [] }, 409);
@@ -301,6 +353,7 @@ async function adminLogin(context: EventContext<Env, string, unknown>) {
 
 async function adminBootstrap(context: EventContext<Env, string, unknown>) {
   const db = context.env.DB;
+  await expireDuePatients(db);
   const [therapists, doctors, rawUnavailable, patients, smsLogs, helpRequests, capacities, dashboard] = await Promise.all([
     all(db, "SELECT * FROM therapists ORDER BY service_area,active DESC,name"),
     all(db, "SELECT * FROM doctors ORDER BY active DESC,code"),
@@ -479,19 +532,31 @@ async function activatePatients(context: EventContext<Env, string, unknown>) {
   const patientIds = Array.isArray(body.patientIds) ? body.patientIds : [];
   if (!patientIds.length) return json({ error: "請先選擇要開通的患者" }, 400);
 
+  const patients = (await Promise.all(patientIds.map((patientId) => first<Patient>(context.env.DB, "SELECT * FROM patients WHERE id=?", patientId)))).filter(Boolean) as Patient[];
+  const unavailable = await all<any>(context.env.DB, "SELECT * FROM unavailable_blocks");
+  const bookedRows = await all<any>(context.env.DB, "SELECT therapist_id,date,time,COUNT(*) AS count FROM booking_events WHERE status='confirmed' GROUP BY therapist_id,date,time");
+  const capacities = await all<any>(context.env.DB, "SELECT * FROM slot_capacities");
+  const unavailablePatients: string[] = [];
+  for (const patient of patients) {
+    if (!await hasActivationPlan(context.env.DB, patient, capacities, unavailable, bookedRows)) {
+      unavailablePatients.push(patient.display_name);
+    }
+  }
+  if (unavailablePatients.length) {
+    return json({ error: `以下患者暫時沒有可在規定窗口內完成的 A/B 班療程，未有開通：${unavailablePatients.join("、")}` }, 409);
+  }
+
   const batchId = `batch-${crypto.randomUUID()}`;
   await run(context.env.DB, "INSERT INTO activation_batches (id,label,status,activated_at) VALUES (?,?, 'activated', CURRENT_TIMESTAMP)", batchId, `開通批次 ${todayKey()}`);
-  for (const patientId of patientIds) {
-    const patient = await first<Patient>(context.env.DB, "SELECT * FROM patients WHERE id=?", patientId);
-    if (!patient) continue;
-    await run(context.env.DB, "UPDATE patients SET status='active',batch_id=?,activated_at=CURRENT_TIMESTAMP WHERE id=?", batchId, patientId);
+  for (const patient of patients) {
+    await run(context.env.DB, "UPDATE patients SET status='active',batch_id=?,activated_at=CURRENT_TIMESTAMP,first_login_at=NULL,rules_accepted_at=NULL WHERE id=?", batchId, patient.id);
     await run(
       context.env.DB,
       "INSERT INTO sms_logs (id,patient_id,phone,message,status) VALUES (?,?,?,?, 'sent')",
       `sms-${crypto.randomUUID()}`,
-      patientId,
+      patient.id,
       patient.phone,
-      `【物理治療預約】${patient.display_name}，你的線上預約權限已開通，請到 https://mfr.09071247.xyz 登入選擇時間。如需協助請致電 ${HELP_PHONE}。`,
+      `【物理治療預約】${patient.display_name}，你的線上預約權限已開通。請於 14 日內到 https://mfr.09071247.xyz 登入並完成預約；療程須在首次登入所在週起 8 週內完成。如需協助請致電 ${HELP_PHONE}。`,
     );
   }
   return json({ ok: true, batchId });
@@ -699,7 +764,7 @@ async function demoReset(db: D1Database) {
   await run(db, "DELETE FROM help_requests");
   await run(db, "DELETE FROM activation_batches");
   await run(db, "DELETE FROM patients WHERE id NOT IN ('pat-001','pat-002','pat-003','pat-004','pat-005')");
-  await run(db, "UPDATE patients SET status=CASE WHEN id IN ('pat-001','pat-002') THEN 'active' WHEN id='pat-005' THEN 'pending' ELSE 'draft' END,rules_accepted_at=NULL,batch_id=NULL,activated_at=NULL");
+  await run(db, "UPDATE patients SET status=CASE WHEN id IN ('pat-001','pat-002') THEN 'active' WHEN id='pat-005' THEN 'pending' ELSE 'draft' END,rules_accepted_at=NULL,batch_id=NULL,activated_at=NULL,first_login_at=NULL");
   return json({ ok: true });
 }
 
@@ -766,6 +831,7 @@ function publicPatient(patient: Patient) {
     status: patient.status,
     rules_accepted_at: patient.rules_accepted_at,
     activated_at: patient.activated_at,
+    first_login_at: patient.first_login_at,
     idNumberTail: patient.id_number,
     phoneTail: patient.phone,
   };
@@ -783,9 +849,21 @@ async function validateAppointments(db: D1Database, patient: Patient, appointmen
     return { ok: false, error: "全部堂數必須使用同一治療師及同一時間" };
   }
 
+  const courseWindow = patientCourseWindow(patient);
+  if (!courseWindow) return { ok: false, error: "療程日期窗口尚未建立，請重新登入後再試。" };
+  if (appointments.some((item) => item.date < courseWindow.start || item.date > courseWindow.end)) {
+    return { ok: false, error: "所選日期必須在首次登入所在週起 8 週內完成。" };
+  }
+  if (new Set(appointments.map((item) => item.date)).size !== appointments.length) {
+    return { ok: false, error: "同一天不可安排多於一堂治療。" };
+  }
+
+  const scheduleGroup = scheduleGroupForAppointments(appointments);
+  if (!scheduleGroup) return { ok: false, error: "整個療程必須選擇同一 A 班（星期三、五）或 B 班（星期二、四）。" };
+
   const weekly = new Map<string, string[]>();
   for (const item of appointments) {
-    if (![2, 3, 4, 5].includes(weekdayNumber(item.date))) return { ok: false, error: "只可選擇星期二至星期五" };
+    if (!SCHEDULE_GROUPS[scheduleGroup].includes(weekdayNumber(item.date) as number)) return { ok: false, error: "療程日期不符合已選班別。" };
     const week = weekKey(item.date);
     weekly.set(week, [...(weekly.get(week) ?? []), item.date]);
   }
@@ -1043,6 +1121,92 @@ function nextBookableDates(start: string, weeks: number) {
     if ([2, 3, 4, 5].includes(weekdayNumber(key))) dates.push(key);
   }
   return dates;
+}
+
+async function expireDuePatients(db: D1Database) {
+  await run(
+    db,
+    "UPDATE patients SET status='expired' WHERE status='active' AND activated_at IS NOT NULL AND date(activated_at, '+14 days') < date('now')",
+  );
+}
+
+function isActivationExpired(patient: Patient) {
+  return patient.status === "active" && Boolean(patient.activated_at) && todayKey() > addDays(dateKey(patient.activated_at!), ACTIVATION_DEADLINE_DAYS);
+}
+
+function patientCourseWindow(patient: Patient) {
+  if (!patient.first_login_at) return null;
+  return courseWindowFromLogin(dateKey(patient.first_login_at));
+}
+
+function courseWindowFromLogin(firstLoginDate: string) {
+  const start = weekKey(firstLoginDate);
+  return {
+    start,
+    end: addDays(start, COURSE_WEEKS * 7 - 1),
+    firstLoginDate,
+  };
+}
+
+function courseDates(start: string, end: string) {
+  const dates: string[] = [];
+  for (let date = start; date <= end; date = addDays(date, 1)) {
+    if ([2, 3, 4, 5].includes(weekdayNumber(date))) dates.push(date);
+  }
+  return dates;
+}
+
+function dateKey(value: string) {
+  return value.slice(0, 10);
+}
+
+function addDays(date: string, days: number) {
+  const next = new Date(`${date}T00:00:00Z`);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next.toISOString().slice(0, 10);
+}
+
+function scheduleGroupForAppointments(appointments: AppointmentInput[]): ScheduleGroup | null {
+  const weekdays = appointments.map((item) => weekdayNumber(item.date));
+  if (weekdays.every((weekday) => SCHEDULE_GROUPS.A.includes(weekday as number))) return "A";
+  if (weekdays.every((weekday) => SCHEDULE_GROUPS.B.includes(weekday as number))) return "B";
+  return null;
+}
+
+async function hasActivationPlan(
+  db: D1Database,
+  patient: Patient,
+  capacities: any[],
+  unavailable: any[],
+  bookedRows: any[],
+) {
+  const therapists = await therapistsForPatient(db, patient);
+  const patientCapacities = capacities.filter((row) => row.service_area === patient.service_area && row.subtype === patient.subtype);
+  const capacityMap = buildCapacityMap(patientCapacities);
+  const bookedMap = new Map(bookedRows.map((row) => [`${row.therapist_id}|${row.date}|${row.time}`, Number(row.count) || 0]));
+  const times = [...new Set(patientCapacities.map((row) => String(row.time)))].sort();
+
+  for (let offset = 0; offset <= ACTIVATION_DEADLINE_DAYS; offset += 1) {
+    const firstLoginDate = addDays(todayKey(), offset);
+    const courseWindow = courseWindowFromLogin(firstLoginDate);
+    const dates = courseDates(courseWindow.start, courseWindow.end).filter((date) => date >= firstLoginDate);
+    const canCompleteForLoginDate = (Object.keys(SCHEDULE_GROUPS) as ScheduleGroup[]).some((group) => (
+      therapists.some((therapist) => times.some((time) => {
+        let availableCount = 0;
+        for (const date of dates) {
+          const weekday = weekdayNumber(date);
+          if (!SCHEDULE_GROUPS[group].includes(weekday as number)) continue;
+          const capacity = capacityFor(capacityMap, therapist.id, weekday, time);
+          const booked = bookedMap.get(`${therapist.id}|${date}|${time}`) ?? 0;
+          if (capacity > booked && !isUnavailable(unavailable, therapist.id, date, time)) availableCount += 1;
+          if (availableCount >= patient.session_count) return true;
+        }
+        return false;
+      }))
+    ));
+    if (!canCompleteForLoginDate) return false;
+  }
+  return true;
 }
 
 function weekdayNumber(date: string) {
