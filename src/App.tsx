@@ -464,11 +464,12 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
             </div>
           </div>
           <div className="rule-cards">
-            <span>請先選擇 A 班或 B 班。A 班只在星期三及星期五治療；B 班只在星期二及星期四治療。</span>
-            <span>確認後整個療程會固定同一班別、同一位治療師及同一個時間。</span>
-            <span>選堂後如因私人原因缺席，恕不補堂。</span>
-            <span>如因病缺席物理治療，請提交政府認可醫院發出的證明；不論任何原因，整個療程最多可獲兩堂補堂。</span>
-            <span>最後確認後，已預約日期不可自行更改；如需協助請致電求助。</span>
+            <span>請先選擇 A 班或 B 班。</span>
+            <span>A 班治療時間為星期三及星期五。</span>
+            <span>B 班治療時間為星期二及星期四。</span>
+            <span>確認後整個療程會固定同一個時間。</span>
+            <span>如因病缺席物理治療，請提交政府認可醫院發出的證明，可酌情補堂，整個療程最多可獲兩堂補堂。</span>
+            <span>最後確認後，已預約日期不可自行更改，如需協助請致電求助。</span>
             {booking && <span>你已有已確認預約；同意規則後只會顯示療程摘要，不可在前台自行改期。</span>}
           </div>
           <button className="primary-button" disabled={busy} onClick={acceptRules} type="button">
