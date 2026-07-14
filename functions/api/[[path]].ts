@@ -32,6 +32,12 @@ type Patient = {
   created_at?: string;
   activated_at?: string | null;
   first_login_at?: string | null;
+  queue_priority?: "urgent" | "normal";
+  notification_due_date?: string | null;
+  original_wait_weeks?: number;
+  notification_deferral_count?: number;
+  notification_deferral_reason?: string | null;
+  monday_only?: number;
 };
 
 type AppointmentInput = {
@@ -48,7 +54,8 @@ const SCHEDULE_GROUPS: Record<"A" | "B", readonly number[]> = {
   A: [3, 5],
   B: [2, 4],
 } as const;
-type ScheduleGroup = keyof typeof SCHEDULE_GROUPS;
+const MONDAY_GROUP = [1] as const;
+type ScheduleGroup = keyof typeof SCHEDULE_GROUPS | "M";
 
 const VALID_SUBTYPES: Record<ServiceArea, string[]> = {
   ELE: ["ELE-1", "ELE-2", "ELE-3"],
@@ -92,9 +99,16 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       return withAdmin(context, () => cancelPatientBooking(context.env.DB, decodeURIComponent(path.split("/")[2] ?? "")));
     }
     if (method === "POST" && path === "admin/activate") return withAdmin(context, () => activatePatients(context));
+    if (method === "GET" && path === "admin/activation-queue") return withAdmin(context, () => activationQueue(context));
+    if (method === "POST" && path === "admin/portal-status") return withAdmin(context, () => updatePortalStatus(context));
+    if (method === "GET" && path === "admin/portal-status") return withAdmin(context, () => portalStatusResponse(context.env.DB));
+    if (method === "POST" && path === "admin/holidays") return withAdmin(context, () => upsertHoliday(context));
+    if (method === "DELETE" && path.startsWith("admin/holidays/")) return withAdmin(context, () => deleteHoliday(context.env.DB, pathId(path)));
     if (method === "POST" && path === "admin/capacity") return withAdmin(context, () => upsertCapacity(context));
     if (method === "POST" && path === "admin/reschedule") return withAdmin(context, () => adminReschedule(context));
     if (method === "GET" && path === "admin/reschedule-options") return withAdmin(context, () => adminRescheduleOptions(context));
+    if (method === "POST" && path === "admin/bulk-transfer/preview") return withAdmin(context, () => bulkTransferPreview(context));
+    if (method === "POST" && path === "admin/bulk-transfer/confirm") return withAdmin(context, () => bulkTransferConfirm(context));
     if (method === "GET" && path === "admin/calendar") return withAdmin(context, () => adminCalendar(context));
     if (method === "POST" && path === "admin/demo/wk-july-full") return withAdmin(context, () => seedWkJulyFullDemo(context.env.DB));
     if (method === "POST" && path === "admin/demo/sparse-therapists") return withAdmin(context, () => seedSparseTherapistDemo(context.env.DB));
@@ -152,11 +166,58 @@ function run(db: D1Database, sql: string, ...binds: unknown[]) {
 }
 
 async function getMeta(db: D1Database) {
-  const [therapists, doctors] = await Promise.all([
+  const [therapists, doctors, portal] = await Promise.all([
     all(db, "SELECT * FROM therapists WHERE active=1 ORDER BY service_area,name"),
     all(db, "SELECT * FROM doctors WHERE active=1 ORDER BY code"),
+    getPortalStatus(db),
   ]);
-  return json({ therapists, doctors, subtypes: VALID_SUBTYPES, helpPhone: HELP_PHONE });
+  return json({ therapists, doctors, subtypes: VALID_SUBTYPES, helpPhone: HELP_PHONE, portal });
+}
+
+async function portalStatusResponse(db: D1Database) {
+  return json(await getPortalStatus(db));
+}
+
+async function getPortalStatus(db: D1Database) {
+  const now = hospitalNow();
+  const [settings, holiday] = await Promise.all([
+    first<{ manual_state: string; manual_until?: string | null }>(db, "SELECT * FROM portal_settings WHERE id='default'"),
+    first<{ name: string }>(db, "SELECT name FROM public_holidays WHERE date=?", now.date),
+  ]);
+  const overrideActive = settings?.manual_state && settings.manual_state !== "auto" && settings.manual_until && new Date(settings.manual_until).getTime() > Date.now();
+  const automaticOpen = weekdayNumber(now.date) >= 1 && weekdayNumber(now.date) <= 5 && now.time >= "09:00" && now.time < "17:00" && !holiday;
+  const open = overrideActive ? settings?.manual_state === "open" : automaticOpen;
+  return {
+    open,
+    automaticOpen,
+    source: overrideActive ? "manual" : "automatic",
+    manualState: overrideActive ? settings?.manual_state : "auto",
+    manualUntil: overrideActive ? settings?.manual_until : null,
+    date: now.date,
+    time: now.time,
+    holiday: holiday?.name ?? null,
+    message: open ? "網上預約服務現正開放。" : holiday ? `今天為${holiday.name}，網上預約服務暫停。` : "網上預約服務現已關閉，服務時間為星期一至五上午9時至下午5時。",
+  };
+}
+
+async function updatePortalStatus(context: EventContext<Env, string, unknown>) {
+  const body = await readJson<{ state?: "open" | "closed" | "auto" }>(context.request);
+  const state = body.state === "open" || body.state === "closed" ? body.state : "auto";
+  const manualUntil = state === "auto" ? null : nextPortalBoundaryIso();
+  await run(context.env.DB, "INSERT INTO portal_settings (id,manual_state,manual_until,updated_at) VALUES ('default',?,?,CURRENT_TIMESTAMP) ON CONFLICT(id) DO UPDATE SET manual_state=excluded.manual_state,manual_until=excluded.manual_until,updated_at=CURRENT_TIMESTAMP", state, manualUntil);
+  return json(await getPortalStatus(context.env.DB));
+}
+
+async function upsertHoliday(context: EventContext<Env, string, unknown>) {
+  const body = await readJson<{ date?: string; name?: string }>(context.request);
+  if (!body.date || !String(body.name ?? "").trim()) return json({ error: "請填寫假期日期及名稱" }, 400);
+  await run(context.env.DB, "INSERT INTO public_holidays (date,name) VALUES (?,?) ON CONFLICT(date) DO UPDATE SET name=excluded.name", body.date, String(body.name).trim());
+  return json({ ok: true });
+}
+
+async function deleteHoliday(db: D1Database, date: string) {
+  await run(db, "DELETE FROM public_holidays WHERE date=?", date);
+  return json({ ok: true });
 }
 
 async function patientLogin(context: EventContext<Env, string, unknown>) {
@@ -211,6 +272,7 @@ async function patientLogin(context: EventContext<Env, string, unknown>) {
     patient: publicPatient(patient),
     booking: await getBookingForPatient(context.env.DB, patient.id),
     helpPhone: HELP_PHONE,
+    portal: await getPortalStatus(context.env.DB),
   });
 }
 
@@ -235,6 +297,8 @@ async function patientAvailability(context: EventContext<Env, string, unknown>) 
     await run(context.env.DB, "UPDATE patients SET first_login_at=CURRENT_TIMESTAMP WHERE id=?", patient.id);
     patient.first_login_at = new Date().toISOString();
   }
+  const portal = await getPortalStatus(context.env.DB);
+  if (patient.status !== "booked" && !portal.open) return json({ error: portal.message, portal }, 423);
   const courseWindow = patientCourseWindow(patient);
   if (!courseWindow) return json({ error: "未能建立療程日期窗口，請致電求助。" }, 409);
 
@@ -257,7 +321,7 @@ async function patientAvailability(context: EventContext<Env, string, unknown>) 
   const aliases = aliasMap(therapists, todayKey());
   const capacityMap = buildCapacityMap(capacities);
   const bookedMap = new Map(bookedRows.map((row) => [`${row.therapist_id}|${row.date}|${row.time}`, Number(row.count) || 0]));
-  const dates = courseDates(courseWindow.start, courseWindow.end);
+  const dates = courseDates(courseWindow.start, courseWindow.end, patient.monday_only ? [...MONDAY_GROUP] : [2, 3, 4, 5]);
   const times = [...new Set(capacities.map((row) => String(row.time)))].sort();
   const slots = [];
 
@@ -291,6 +355,7 @@ async function patientAvailability(context: EventContext<Env, string, unknown>) 
     slots,
     booking,
     courseWindow,
+    portal,
   });
 }
 
@@ -302,6 +367,8 @@ async function patientBook(context: EventContext<Env, string, unknown>) {
     await run(context.env.DB, "UPDATE patients SET status='expired' WHERE id=?", patient.id);
     return json({ error: `此帳號的網上報名期限已過，請致電 ${HELP_PHONE} 由職員協助。` }, 403);
   }
+  const portal = await getPortalStatus(context.env.DB);
+  if (!portal.open) return json({ error: portal.message }, 423);
 
   const validation = await validateAppointments(context.env.DB, patient, body.appointments);
   if (!validation.ok) return json({ error: validation.error, conflicts: validation.conflicts ?? [] }, 409);
@@ -355,7 +422,8 @@ async function adminLogin(context: EventContext<Env, string, unknown>) {
 async function adminBootstrap(context: EventContext<Env, string, unknown>) {
   const db = context.env.DB;
   await expireDuePatients(db);
-  const [therapists, doctors, rawUnavailable, patients, smsLogs, helpRequests, capacities, dashboard] = await Promise.all([
+  await recalculateActivationQueue(db);
+  const [therapists, doctors, rawUnavailable, patients, smsLogs, helpRequests, capacities, dashboard, portal, holidays, transferBatches] = await Promise.all([
     all(db, "SELECT * FROM therapists ORDER BY service_area,active DESC,name"),
     all(db, "SELECT * FROM doctors ORDER BY active DESC,code"),
     all(db, "SELECT u.*,t.name AS therapist_name FROM unavailable_blocks u LEFT JOIN therapists t ON t.id=u.therapist_id ORDER BY start_date DESC LIMIT 300"),
@@ -364,10 +432,13 @@ async function adminBootstrap(context: EventContext<Env, string, unknown>) {
     all(db, "SELECT * FROM help_requests ORDER BY created_at DESC LIMIT 100"),
     all(db, "SELECT * FROM slot_capacities ORDER BY service_area,subtype,weekday,time LIMIT 800"),
     buildDashboard(db),
+    getPortalStatus(db),
+    all(db, "SELECT * FROM public_holidays ORDER BY date"),
+    all(db, "SELECT b.*,t.name AS source_therapist_name FROM transfer_batches b LEFT JOIN therapists t ON t.id=b.source_therapist_id ORDER BY b.created_at DESC LIMIT 30"),
   ]);
   const unavailable = dedupeUnavailableBlocks(rawUnavailable);
 
-  return json({ therapists, doctors, unavailable, patients, smsLogs, helpRequests, capacities, dashboard, subtypes: VALID_SUBTYPES, helpPhone: HELP_PHONE });
+  return json({ therapists, doctors, unavailable, patients, smsLogs, helpRequests, capacities, dashboard, portal, holidays, transferBatches, subtypes: VALID_SUBTYPES, helpPhone: HELP_PHONE });
 }
 
 async function upsertTherapist(context: EventContext<Env, string, unknown>) {
@@ -461,9 +532,15 @@ async function upsertPatient(context: EventContext<Env, string, unknown>) {
   const existing = body.id ? await first<Patient>(context.env.DB, "SELECT * FROM patients WHERE id=?", body.id) : null;
   const isBooked = existing?.status === "booked";
   const sessionCount = isBooked ? existing.session_count : clamp(Number(body.custom_session_count || body.session_count || 6), 1, 99);
+  const queuePriority = body.queue_priority === "urgent" ? "urgent" : "normal";
+  const waitWeeks = queuePriority === "urgent" ? 2 : 4;
+  const mondayOnly = isBooked ? Number(existing?.monday_only) || 0 : body.monday_only ? 1 : 0;
+  const notificationDueDate = isBooked
+    ? existing?.notification_due_date ?? null
+    : String(body.notification_due_date || addDays(todayKey(), waitWeeks * 7));
   await run(
     context.env.DB,
-    "INSERT INTO patients (id,patient_code,id_number,phone,display_name,doctor_id,service_area,subtype,gender_preference,session_count,status) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET patient_code=excluded.patient_code,id_number=excluded.id_number,phone=excluded.phone,display_name=excluded.display_name,doctor_id=excluded.doctor_id,service_area=excluded.service_area,subtype=excluded.subtype,gender_preference=excluded.gender_preference,session_count=excluded.session_count,status=excluded.status",
+    "INSERT INTO patients (id,patient_code,id_number,phone,display_name,doctor_id,service_area,subtype,gender_preference,session_count,status,queue_priority,notification_due_date,original_wait_weeks,monday_only) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET patient_code=excluded.patient_code,id_number=excluded.id_number,phone=excluded.phone,display_name=excluded.display_name,doctor_id=excluded.doctor_id,service_area=excluded.service_area,subtype=excluded.subtype,gender_preference=excluded.gender_preference,session_count=excluded.session_count,status=excluded.status,queue_priority=excluded.queue_priority,notification_due_date=excluded.notification_due_date,original_wait_weeks=excluded.original_wait_weeks,monday_only=excluded.monday_only",
     id,
     isBooked ? existing.patient_code : String(body.patient_code || `P${Math.floor(Math.random() * 9000 + 1000)}`).trim(),
     idNumber,
@@ -475,7 +552,12 @@ async function upsertPatient(context: EventContext<Env, string, unknown>) {
     isBooked ? existing.gender_preference : normalizeGenderPreference(body.gender_preference),
     sessionCount,
     isBooked ? existing.status : body.status || "draft",
+    isBooked ? existing.queue_priority ?? "normal" : queuePriority,
+    notificationDueDate,
+    isBooked ? existing.original_wait_weeks ?? 4 : waitWeeks,
+    mondayOnly,
   );
+  await recalculateActivationQueue(context.env.DB);
   return json({ ok: true, id });
 }
 
@@ -538,9 +620,14 @@ async function activatePatients(context: EventContext<Env, string, unknown>) {
   const bookedRows = await all<any>(context.env.DB, "SELECT therapist_id,date,time,COUNT(*) AS count FROM booking_events WHERE status='confirmed' GROUP BY therapist_id,date,time");
   const capacities = await all<any>(context.env.DB, "SELECT * FROM slot_capacities");
   const unavailablePatients: string[] = [];
-  for (const patient of patients) {
-    if (!await hasActivationPlan(context.env.DB, patient, capacities, unavailable, bookedRows)) {
+  const virtualBooked = new Map(bookedRows.map((row) => [`${row.therapist_id}|${row.date}|${row.time}`, Number(row.count) || 0]));
+  const orderedPatients = [...patients].sort((left, right) => (left.queue_priority === "urgent" ? 0 : 1) - (right.queue_priority === "urgent" ? 0 : 1) || String(left.created_at).localeCompare(String(right.created_at)));
+  for (const patient of orderedPatients) {
+    const plan = await findActivationPlan(context.env.DB, patient, capacities, unavailable, virtualBooked);
+    if (!plan) {
       unavailablePatients.push(patient.display_name);
+    } else {
+      for (const key of plan) virtualBooked.set(key, (virtualBooked.get(key) ?? 0) + 1);
     }
   }
   if (unavailablePatients.length) {
@@ -560,7 +647,42 @@ async function activatePatients(context: EventContext<Env, string, unknown>) {
       `【物理治療預約】${patient.display_name}，你的線上預約權限已開通。請於 14 日內到 https://mfr.09071247.xyz 登入並完成預約；療程須在首次登入所在週起 8 週內完成。如需協助請致電 ${HELP_PHONE}。`,
     );
   }
+  await recalculateActivationQueue(context.env.DB);
   return json({ ok: true, batchId });
+}
+
+async function activationQueue(context: EventContext<Env, string, unknown>) {
+  const url = new URL(context.request.url);
+  const priority = url.searchParams.get("priority") ?? "";
+  const minWeeks = clamp(Number(url.searchParams.get("minWeeks") || 0), 0, 52);
+  const createdDate = url.searchParams.get("createdDate") ?? "";
+  const dueOnly = url.searchParams.get("dueOnly") === "1";
+  await recalculateActivationQueue(context.env.DB);
+  const where = ["p.status IN ('draft','pending')"];
+  const values: unknown[] = [];
+  if (priority === "urgent" || priority === "normal") {
+    where.push("p.queue_priority=?");
+    values.push(priority);
+  }
+  if (createdDate) {
+    where.push("date(p.created_at)=?");
+    values.push(createdDate);
+  }
+  if (minWeeks) {
+    where.push("date(p.created_at) <= date('now', ?)");
+    values.push(`-${minWeeks * 7} days`);
+  }
+  if (dueOnly) where.push("p.notification_due_date IS NOT NULL AND p.notification_due_date <= date('now')");
+  const patients = await all<any>(
+    context.env.DB,
+    `SELECT p.*,d.code AS doctor_code,d.name AS doctor_name,
+      CAST((julianday('now') - julianday(p.created_at)) / 7 AS INTEGER) AS waiting_weeks
+     FROM patients p LEFT JOIN doctors d ON d.id=p.doctor_id
+     WHERE ${where.join(" AND ")}
+     ORDER BY CASE p.queue_priority WHEN 'urgent' THEN 0 ELSE 1 END,p.notification_due_date,p.created_at`,
+    ...values,
+  );
+  return json({ patients, today: todayKey() });
 }
 
 async function upsertCapacity(context: EventContext<Env, string, unknown>) {
@@ -631,6 +753,121 @@ async function adminRescheduleOptions(context: EventContext<Env, string, unknown
     options.push({ time, available: check.ok, reason: check.ok ? "" : check.error });
   }
   return json({ options, availableTimes: options.filter((item) => item.available).map((item) => item.time) });
+}
+
+type BulkTransferInput = { sourceTherapistId: string; date: string; startTime?: string; endTime?: string; reason?: string };
+
+async function bulkTransferPreview(context: EventContext<Env, string, unknown>) {
+  const body = await readJson<BulkTransferInput>(context.request);
+  const plan = await buildBulkTransferPlan(context.env.DB, body);
+  return json(plan);
+}
+
+async function bulkTransferConfirm(context: EventContext<Env, string, unknown>) {
+  const body = await readJson<BulkTransferInput>(context.request);
+  const plan = await buildBulkTransferPlan(context.env.DB, body);
+  if (!plan.sourceTherapist) return json({ error: "找不到原治療師" }, 404);
+  const batchId = `transfer-${crypto.randomUUID()}`;
+  const blockId = `unav-${crypto.randomUUID()}`;
+  const allDay = !body.startTime || !body.endTime;
+  await run(
+    context.env.DB,
+    "INSERT INTO unavailable_blocks (id,therapist_id,start_date,end_date,start_time,end_time,all_day,reason) VALUES (?,?,?,?,?,?,?,?)",
+    blockId,
+    body.sourceTherapistId,
+    body.date,
+    body.date,
+    allDay ? null : body.startTime,
+    allDay ? null : body.endTime,
+    allDay ? 1 : 0,
+    String(body.reason || "臨時病假").trim(),
+  );
+  let transferred = 0;
+  let unresolved = 0;
+  for (const item of plan.items) {
+    if (item.targetTherapistId) {
+      await run(context.env.DB, "UPDATE booking_events SET therapist_id=? WHERE id=?", item.targetTherapistId, item.appointmentId);
+      transferred += 1;
+    } else {
+      unresolved += 1;
+    }
+    await run(
+      context.env.DB,
+      "INSERT INTO transfer_items (id,batch_id,booking_event_id,patient_id,source_therapist_id,target_therapist_id,status,reason) VALUES (?,?,?,?,?,?,?,?)",
+      `transfer-item-${crypto.randomUUID()}`,
+      batchId,
+      item.appointmentId,
+      item.patientId,
+      body.sourceTherapistId,
+      item.targetTherapistId ?? null,
+      item.targetTherapistId ? "transferred" : "unresolved",
+      item.reason ?? null,
+    );
+  }
+  await run(
+    context.env.DB,
+    "INSERT INTO transfer_batches (id,source_therapist_id,date,start_time,end_time,unavailable_block_id,reason,transferred_count,unresolved_count) VALUES (?,?,?,?,?,?,?,?,?)",
+    batchId,
+    body.sourceTherapistId,
+    body.date,
+    allDay ? null : body.startTime,
+    allDay ? null : body.endTime,
+    blockId,
+    String(body.reason || "臨時病假").trim(),
+    transferred,
+    unresolved,
+  );
+  return json({ ok: true, batchId, transferred, unresolved, items: plan.items });
+}
+
+async function buildBulkTransferPlan(db: D1Database, body: BulkTransferInput) {
+  const sourceTherapist = await first<Therapist>(db, "SELECT * FROM therapists WHERE id=?", body.sourceTherapistId);
+  if (!sourceTherapist || !body.date) return { sourceTherapist: null, items: [] as any[] };
+  const [rows, therapists, capacities, unavailable, bookedRows] = await Promise.all([
+    all<any>(db, "SELECT b.*,p.display_name,p.patient_code,p.gender_preference,p.monday_only FROM booking_events b LEFT JOIN patients p ON p.id=b.patient_id WHERE b.therapist_id=? AND b.date=? AND b.status='confirmed' ORDER BY b.time", body.sourceTherapistId, body.date),
+    all<Therapist>(db, "SELECT * FROM therapists WHERE active=1 AND service_area=? AND id<>? ORDER BY code", sourceTherapist.service_area, body.sourceTherapistId),
+    all<any>(db, "SELECT * FROM slot_capacities WHERE service_area=?", sourceTherapist.service_area),
+    all<any>(db, "SELECT * FROM unavailable_blocks"),
+    all<any>(db, "SELECT therapist_id,date,time,COUNT(*) AS count FROM booking_events WHERE status='confirmed' GROUP BY therapist_id,date,time"),
+  ]);
+  const events = rows.filter((row) => (!body.startTime || row.time >= body.startTime!) && (!body.endTime || row.time < body.endTime!));
+  const bookedMap = new Map(bookedRows.map((row) => [`${row.therapist_id}|${row.date}|${row.time}`, Number(row.count) || 0]));
+  const dailyLoads = new Map<string, number>();
+  for (const row of bookedRows) {
+    if (row.date === body.date) dailyLoads.set(row.therapist_id, (dailyLoads.get(row.therapist_id) ?? 0) + Number(row.count || 0));
+  }
+  const items: any[] = [];
+  for (const event of events) {
+    const eventCapacityMap = buildCapacityMap(capacities.filter((row) => row.subtype === event.subtype));
+    const candidates = therapists
+      .filter((therapist) => event.gender_preference === "any" || therapist.gender === event.gender_preference || therapist.gender === "unknown")
+      .map((therapist) => {
+        const key = `${therapist.id}|${body.date}|${event.time}`;
+        const capacity = capacityFor(eventCapacityMap, therapist.id, weekdayNumber(body.date), event.time);
+        const booked = bookedMap.get(key) ?? 0;
+        const valid = capacity > booked && !isUnavailable(unavailable, therapist.id, body.date, event.time);
+        return { therapist, capacity, booked, remaining: capacity - booked, valid, load: dailyLoads.get(therapist.id) ?? 0 };
+      })
+      .filter((candidate) => candidate.valid)
+      .sort((left, right) => right.remaining - left.remaining || left.load - right.load || left.therapist.code.localeCompare(right.therapist.code));
+    const target = candidates[0];
+    if (target) {
+      const key = `${target.therapist.id}|${body.date}|${event.time}`;
+      bookedMap.set(key, (bookedMap.get(key) ?? 0) + 1);
+      dailyLoads.set(target.therapist.id, (dailyLoads.get(target.therapist.id) ?? 0) + 1);
+    }
+    items.push({
+      appointmentId: event.id,
+      patientId: event.patient_id,
+      patientCode: event.patient_code,
+      displayName: event.display_name,
+      time: event.time,
+      targetTherapistId: target?.therapist.id ?? null,
+      targetTherapistName: target?.therapist.name ?? null,
+      reason: target ? "" : "沒有符合分類、性別及容量的治療師空位",
+    });
+  }
+  return { sourceTherapist, date: body.date, startTime: body.startTime ?? "", endTime: body.endTime ?? "", items, transferable: items.filter((item) => item.targetTherapistId).length, unresolved: items.filter((item) => !item.targetTherapistId).length };
 }
 
 async function adminCalendar(context: EventContext<Env, string, unknown>) {
@@ -917,6 +1154,7 @@ function publicPatient(patient: Patient) {
     rules_accepted_at: patient.rules_accepted_at,
     activated_at: patient.activated_at,
     first_login_at: patient.first_login_at,
+    monday_only: Number(patient.monday_only) || 0,
     idNumberTail: patient.id_number,
     phoneTail: patient.phone,
   };
@@ -937,7 +1175,7 @@ async function validateAppointments(db: D1Database, patient: Patient, appointmen
   const courseWindow = patientCourseWindow(patient);
   if (!courseWindow) return { ok: false, error: "療程日期窗口尚未建立，請重新登入後再試。" };
   if (appointments.some((item) => item.date < courseWindow.start || item.date > courseWindow.end)) {
-    return { ok: false, error: "所選日期必須在首次登入所在週起 8 週內完成。" };
+    return { ok: false, error: "所選日期不在此療程可安排的期限內。" };
   }
   if (new Set(appointments.map((item) => item.date)).size !== appointments.length) {
     return { ok: false, error: "同一天不可安排多於一堂治療。" };
@@ -945,16 +1183,18 @@ async function validateAppointments(db: D1Database, patient: Patient, appointmen
 
   const scheduleGroup = scheduleGroupForAppointments(appointments);
   if (!scheduleGroup) return { ok: false, error: "整個療程必須選擇同一 A 班（星期三、五）或 B 班（星期二、四）。" };
+  if (patient.monday_only && scheduleGroup !== "M") return { ok: false, error: "此療程只可安排於星期一。" };
+  if (!patient.monday_only && scheduleGroup === "M") return { ok: false, error: "星期一只供後台指定的特別療程使用。" };
 
   const weekly = new Map<string, string[]>();
   for (const item of appointments) {
-    if (!SCHEDULE_GROUPS[scheduleGroup].includes(weekdayNumber(item.date) as number)) return { ok: false, error: "療程日期不符合已選班別。" };
+    if (!groupWeekdays(scheduleGroup).includes(weekdayNumber(item.date))) return { ok: false, error: "療程日期不符合已選班別。" };
     const week = weekKey(item.date);
     weekly.set(week, [...(weekly.get(week) ?? []), item.date]);
   }
   for (const days of weekly.values()) {
     const uniqueDays = [...new Set(days)].sort();
-    if (uniqueDays.length > 2) return { ok: false, error: "每星期最多只能預約兩堂" };
+    if (uniqueDays.length > (scheduleGroup === "M" ? 1 : 2)) return { ok: false, error: scheduleGroup === "M" ? "星期一療程每週只可預約一堂" : "每星期最多只能預約兩堂" };
     if (uniqueDays.length === 2 && Math.abs(daysBetween(uniqueDays[0], uniqueDays[1])) < 2) {
       return { ok: false, error: "同一星期兩堂之間最少要相隔一日" };
     }
@@ -975,7 +1215,8 @@ async function validateSingleSlot(db: D1Database, patient: Patient, therapistId:
   if (patient.gender_preference !== "any" && therapist.gender !== patient.gender_preference && therapist.gender !== "unknown") {
     return { ok: false, error: "治療師不符合性別限制" };
   }
-  if (![2, 3, 4, 5].includes(weekdayNumber(date))) return { ok: false, error: "只可選擇星期二至星期五" };
+  const validWeekdays = patient.monday_only ? [1] : [2, 3, 4, 5];
+  if (!validWeekdays.includes(weekdayNumber(date))) return { ok: false, error: patient.monday_only ? "此療程只可選擇星期一" : "只可選擇星期二至星期五" };
 
   const unavailable = await all<any>(db, "SELECT * FROM unavailable_blocks WHERE therapist_id=?", therapistId);
   if (isUnavailable(unavailable, therapistId, date, time)) return { ok: false, error: "不可預約時段" };
@@ -1026,7 +1267,8 @@ function buildCalendarStats({
   const dailyStats = monthDaysList(month).map((date) => {
     const weekday = weekdayNumber(date);
     const isWeekend = [6, 7].includes(weekday);
-    const isReserved = weekday === 1;
+    const isMondaySpecial = weekday === 1;
+    const isReserved = false;
     const dayBlocks = unavailable.filter((block) => date >= block.start_date && date <= block.end_date);
     const unavailableReasons = dayBlocks.map((block) => ({
       therapistId: block.therapist_id,
@@ -1040,7 +1282,7 @@ function buildCalendarStats({
     let blockedCapacity = 0;
     const vacancyTimes: Array<{ therapistId: string; therapistName: string; time: string; remaining: number; capacity: number; booked: number }> = [];
 
-    if (!isWeekend && !isReserved) {
+    if (!isWeekend) {
       for (const therapist of therapists) {
         const times = capacityTimesForService(capacities, therapist.service_area, weekday);
         for (const time of times) {
@@ -1064,9 +1306,7 @@ function buildCalendarStats({
     const remaining = Math.max(capacityTotal - booked, 0);
     const status = isWeekend
       ? "weekend"
-      : isReserved
-        ? "reserved"
-        : capacityTotal === 0 && unavailableReasons.length
+      : capacityTotal === 0 && unavailableReasons.length
         ? "unavailable"
         : capacityTotal === 0
           ? "no-capacity"
@@ -1081,6 +1321,7 @@ function buildCalendarStats({
       weekday,
       isWeekend,
       isReserved,
+      isMondaySpecial,
       capacityTotal,
       booked,
       remaining,
@@ -1180,7 +1421,7 @@ function hash(input: string) {
 }
 
 function todayKey() {
-  return new Date().toISOString().slice(0, 10);
+  return hospitalNow().date;
 }
 
 function monthBounds(month: string) {
@@ -1208,6 +1449,55 @@ function nextBookableDates(start: string, weeks: number) {
   return dates;
 }
 
+function hospitalNow() {
+  const shifted = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  const iso = shifted.toISOString();
+  return { date: iso.slice(0, 10), time: iso.slice(11, 16) };
+}
+
+function nextPortalBoundaryIso() {
+  const now = hospitalNow();
+  const hour = Number(now.time.slice(0, 2));
+  let date = now.date;
+  let time = "17:00";
+  if (hour >= 17 || hour < 9) {
+    time = "09:00";
+    if (hour >= 17) date = addDays(date, 1);
+  }
+  const shiftedTimestamp = new Date(`${date}T${time}:00Z`).getTime();
+  return new Date(shiftedTimestamp - 8 * 60 * 60 * 1000).toISOString();
+}
+
+async function recalculateActivationQueue(db: D1Database) {
+  const today = todayKey();
+  const patients = await all<Patient>(
+    db,
+    "SELECT * FROM patients WHERE status IN ('draft','pending') AND notification_due_date IS NOT NULL AND notification_due_date<=? ORDER BY CASE queue_priority WHEN 'urgent' THEN 0 ELSE 1 END,created_at",
+    today,
+  );
+  if (!patients.length) return;
+  const [capacities, unavailable, bookedRows] = await Promise.all([
+    all<any>(db, "SELECT * FROM slot_capacities"),
+    all<any>(db, "SELECT * FROM unavailable_blocks"),
+    all<any>(db, "SELECT therapist_id,date,time,COUNT(*) AS count FROM booking_events WHERE status='confirmed' GROUP BY therapist_id,date,time"),
+  ]);
+  const virtualBooked = new Map(bookedRows.map((row) => [`${row.therapist_id}|${row.date}|${row.time}`, Number(row.count) || 0]));
+  for (const patient of patients) {
+    if (patient.notification_deferral_reason === `容量不足：${today}`) continue;
+    const plan = await findActivationPlan(db, patient, capacities, unavailable, virtualBooked);
+    if (!plan) {
+      await run(
+        db,
+        "UPDATE patients SET notification_due_date=date(notification_due_date, '+7 days'),notification_deferral_count=notification_deferral_count+1,notification_deferral_reason=? WHERE id=?",
+        `容量不足：${today}`,
+        patient.id,
+      );
+    } else {
+      for (const key of plan) virtualBooked.set(key, (virtualBooked.get(key) ?? 0) + 1);
+    }
+  }
+}
+
 async function expireDuePatients(db: D1Database) {
   await run(
     db,
@@ -1221,22 +1511,22 @@ function isActivationExpired(patient: Patient) {
 
 function patientCourseWindow(patient: Patient) {
   if (!patient.first_login_at) return null;
-  return courseWindowFromLogin(dateKey(patient.first_login_at));
+  return courseWindowFromLogin(dateKey(patient.first_login_at), Boolean(patient.monday_only), Number(patient.session_count));
 }
 
-function courseWindowFromLogin(firstLoginDate: string) {
+function courseWindowFromLogin(firstLoginDate: string, mondayOnly = false, sessionCount = COURSE_WEEKS) {
   const start = weekKey(firstLoginDate);
   return {
     start,
-    end: addDays(start, COURSE_WEEKS * 7 - 1),
+    end: addDays(start, (mondayOnly ? sessionCount : COURSE_WEEKS) * 7 - 1),
     firstLoginDate,
   };
 }
 
-function courseDates(start: string, end: string) {
+function courseDates(start: string, end: string, weekdays = [2, 3, 4, 5]) {
   const dates: string[] = [];
   for (let date = start; date <= end; date = addDays(date, 1)) {
-    if ([2, 3, 4, 5].includes(weekdayNumber(date))) dates.push(date);
+    if (weekdays.includes(weekdayNumber(date))) dates.push(date);
   }
   return dates;
 }
@@ -1253,9 +1543,14 @@ function addDays(date: string, days: number) {
 
 function scheduleGroupForAppointments(appointments: AppointmentInput[]): ScheduleGroup | null {
   const weekdays = appointments.map((item) => weekdayNumber(item.date));
-  if (weekdays.every((weekday) => SCHEDULE_GROUPS.A.includes(weekday as number))) return "A";
-  if (weekdays.every((weekday) => SCHEDULE_GROUPS.B.includes(weekday as number))) return "B";
+  if (weekdays.every((weekday) => MONDAY_GROUP.includes(weekday as 1))) return "M";
+  if (weekdays.every((weekday) => SCHEDULE_GROUPS.A.includes(weekday))) return "A";
+  if (weekdays.every((weekday) => SCHEDULE_GROUPS.B.includes(weekday))) return "B";
   return null;
+}
+
+function groupWeekdays(group: ScheduleGroup) {
+  return group === "M" ? [...MONDAY_GROUP] : [...SCHEDULE_GROUPS[group]];
 }
 
 async function hasActivationPlan(
@@ -1265,33 +1560,50 @@ async function hasActivationPlan(
   unavailable: any[],
   bookedRows: any[],
 ) {
+  const bookedMap = new Map(bookedRows.map((row) => [`${row.therapist_id}|${row.date}|${row.time}`, Number(row.count) || 0]));
+  return Boolean(await findActivationPlan(db, patient, capacities, unavailable, bookedMap));
+}
+
+async function findActivationPlan(
+  db: D1Database,
+  patient: Patient,
+  capacities: any[],
+  unavailable: any[],
+  bookedMap: Map<string, number>,
+) {
   const therapists = await therapistsForPatient(db, patient);
   const patientCapacities = capacities.filter((row) => row.service_area === patient.service_area && row.subtype === patient.subtype);
   const capacityMap = buildCapacityMap(patientCapacities);
-  const bookedMap = new Map(bookedRows.map((row) => [`${row.therapist_id}|${row.date}|${row.time}`, Number(row.count) || 0]));
   const times = [...new Set(patientCapacities.map((row) => String(row.time)))].sort();
 
   for (let offset = 0; offset <= ACTIVATION_DEADLINE_DAYS; offset += 1) {
     const firstLoginDate = addDays(todayKey(), offset);
-    const courseWindow = courseWindowFromLogin(firstLoginDate);
-    const dates = courseDates(courseWindow.start, courseWindow.end).filter((date) => date >= firstLoginDate);
-    const canCompleteForLoginDate = (Object.keys(SCHEDULE_GROUPS) as ScheduleGroup[]).some((group) => (
-      therapists.some((therapist) => times.some((time) => {
-        let availableCount = 0;
-        for (const date of dates) {
-          const weekday = weekdayNumber(date);
-          if (!SCHEDULE_GROUPS[group].includes(weekday as number)) continue;
-          const capacity = capacityFor(capacityMap, therapist.id, weekday, time);
-          const booked = bookedMap.get(`${therapist.id}|${date}|${time}`) ?? 0;
-          if (capacity > booked && !isUnavailable(unavailable, therapist.id, date, time)) availableCount += 1;
-          if (availableCount >= patient.session_count) return true;
+    const courseWindow = courseWindowFromLogin(firstLoginDate, Boolean(patient.monday_only), Number(patient.session_count));
+    const dates = courseDates(courseWindow.start, courseWindow.end, patient.monday_only ? [1] : [2, 3, 4, 5]).filter((date) => date >= firstLoginDate);
+    const groups: ScheduleGroup[] = patient.monday_only ? ["M"] : ["A", "B"];
+    for (const group of groups) {
+      for (const therapist of therapists) {
+        for (const time of times) {
+          const picked: string[] = [];
+          const weekly = new Map<string, number>();
+          for (const date of dates) {
+            const weekday = weekdayNumber(date);
+            if (!groupWeekdays(group).includes(weekday)) continue;
+            const capacity = capacityFor(capacityMap, therapist.id, weekday, time);
+            const key = `${therapist.id}|${date}|${time}`;
+            const week = weekKey(date);
+            const weeklyLimit = group === "M" ? 1 : 2;
+            if (capacity > (bookedMap.get(key) ?? 0) && !isUnavailable(unavailable, therapist.id, date, time) && (weekly.get(week) ?? 0) < weeklyLimit) {
+              picked.push(key);
+              weekly.set(week, (weekly.get(week) ?? 0) + 1);
+            }
+            if (picked.length >= Number(patient.session_count)) return picked;
+          }
         }
-        return false;
-      }))
-    ));
-    if (!canCompleteForLoginDate) return false;
+      }
+    }
   }
-  return true;
+  return null;
 }
 
 function weekdayNumber(date: string) {

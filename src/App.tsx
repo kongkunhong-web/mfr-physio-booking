@@ -26,7 +26,7 @@ type Route = "home" | "patient" | "admin";
 type ServiceArea = "ELE" | "GYM";
 type Gender = "male" | "female" | "unknown";
 type GenderPreference = "any" | "male" | "female";
-type ScheduleGroup = "A" | "B";
+type ScheduleGroup = "A" | "B" | "M";
 
 type Therapist = {
   id: string;
@@ -64,6 +64,12 @@ type Patient = {
   phoneTail?: string;
   id_number?: string;
   phone?: string;
+  queue_priority?: "urgent" | "normal";
+  notification_due_date?: string | null;
+  original_wait_weeks?: number;
+  notification_deferral_count?: number;
+  notification_deferral_reason?: string | null;
+  monday_only?: number;
 };
 
 type Appointment = {
@@ -95,6 +101,19 @@ type Availability = {
   slots: Slot[];
   booking: Booking | null;
   courseWindow?: { start: string; end: string; firstLoginDate: string };
+  portal?: PortalStatus;
+};
+
+type PortalStatus = {
+  open: boolean;
+  automaticOpen: boolean;
+  source: "manual" | "automatic";
+  manualState: "open" | "closed" | "auto";
+  manualUntil?: string | null;
+  date: string;
+  time: string;
+  holiday?: string | null;
+  message: string;
 };
 
 type Booking = {
@@ -121,6 +140,9 @@ type AdminData = {
   dashboard: Record<string, any>;
   subtypes: Record<ServiceArea, string[]>;
   helpPhone: string;
+  portal: PortalStatus;
+  holidays: Array<{ date: string; name: string }>;
+  transferBatches: Array<Record<string, any>>;
 };
 
 type CalendarDayStat = {
@@ -152,7 +174,7 @@ const SUBTYPES: Record<ServiceArea, string[]> = {
 };
 const WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"];
 const SESSION_OPTIONS = Array.from({ length: 7 }, (_, index) => index + 6);
-const WEEKDAY_OPTIONS = [["2", "星期二"], ["3", "星期三"], ["4", "星期四"], ["5", "星期五"]];
+const WEEKDAY_OPTIONS = [["1", "星期一特別療程"], ["2", "星期二"], ["3", "星期三"], ["4", "星期四"], ["5", "星期五"]];
 const SERVICE_TIMES: Record<ServiceArea, string[]> = {
   ELE: ["08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00", "15:30", "16:00", "16:30", "17:00", "17:30", "18:00", "18:30"],
   GYM: ["08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00", "15:30", "16:00", "16:30", "17:00", "17:30", "18:00", "18:30"],
@@ -160,6 +182,7 @@ const SERVICE_TIMES: Record<ServiceArea, string[]> = {
 const SCHEDULE_GROUPS: Record<ScheduleGroup, { label: string; weekdays: number[] }> = {
   A: { label: "A班：星期三及星期五", weekdays: [3, 5] },
   B: { label: "B班：星期二及星期四", weekdays: [2, 4] },
+  M: { label: "星期一特別安排", weekdays: [1] },
 };
 const PATIENT_WEEKDAY_HEADERS = ["星期二", "星期三", "星期四", "星期五"];
 
@@ -296,7 +319,12 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
         setStep("summary");
       } else {
         await loadAvailability(patient.id, false);
-        setStep("group");
+        if (patient.monday_only) {
+          setSelectedGroup("M");
+          setStep("time");
+        } else {
+          setStep("group");
+        }
       }
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
@@ -348,8 +376,9 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
       setSelectedTime("");
       setSelectedTherapistId("");
       setSelectedPlanKey("");
-      setStep("group");
-      setNotice("已沒有位置或名額已更新，請重新選擇 A/B 班別。" );
+      setStep(patient.monday_only ? "time" : "group");
+      if (patient.monday_only) setSelectedGroup("M");
+      setNotice(patient.monday_only ? "已沒有位置或名額已更新，請重新選擇星期一特別療程時間。" : "已沒有位置或名額已更新，請重新選擇 A/B 班別。");
     } finally {
       setBusy(false);
     }
@@ -392,7 +421,7 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
   function clearDraft() {
     setSelected([]);
     setSelectedPlanKey("");
-    setStep(selectedTherapistId ? "plan" : selectedTime ? "therapist" : selectedGroup ? "time" : "group");
+    setStep(selectedTherapistId ? "plan" : selectedTime ? "therapist" : selectedGroup ? "time" : patient?.monday_only ? "time" : "group");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -464,12 +493,15 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
             </div>
           </div>
           <div className="rule-cards">
-            <span>請先選擇 A 班或 B 班。</span>
-            <span>A 班治療時間為星期三及星期五。</span>
-            <span>B 班治療時間為星期二及星期四。</span>
+            {!patient.monday_only && <span>請先選擇 A 班或 B 班。</span>}
+            {!patient.monday_only && <span>A 班治療時間為星期三及星期五。</span>}
+            {!patient.monday_only && <span>B 班治療時間為星期二及星期四。</span>}
+            {patient.monday_only && <span>此療程已由醫院安排為星期一特別療程，每星期只安排一堂。</span>}
             <span>確認後整個療程會固定同一個時間。</span>
+            <span>選堂後如因私人原因缺席，不獲補堂。</span>
             <span>如因病缺席物理治療，請提交政府認可醫院發出的證明，可酌情補堂，整個療程最多可獲兩堂補堂。</span>
             <span>最後確認後，已預約日期不可自行更改，如需協助請致電求助。</span>
+            <span>網上預約服務時間為星期一至星期五上午9時至下午5時，星期六、日及公眾假期暫停服務。</span>
             {booking && <span>你已有已確認預約；同意規則後只會顯示療程摘要，不可在前台自行改期。</span>}
           </div>
           <button className="primary-button" disabled={busy} onClick={acceptRules} type="button">
@@ -492,9 +524,9 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
                   <h2>選擇治療班別</h2>
                 </div>
               </div>
-              <p className="flow-copy">選定後整個療程不可轉班；星期一保留給後台操作。</p>
+              <p className="flow-copy">選定後整個療程不可轉班；星期一保留給醫院指定的特別療程。</p>
               <div className="option-list">
-                {(Object.keys(SCHEDULE_GROUPS) as ScheduleGroup[]).map((group) => (
+                {(["A", "B"] as ScheduleGroup[]).map((group) => (
                   <button className="option-card" key={group} onClick={() => chooseGroup(group)} type="button">
                     <strong>{SCHEDULE_GROUPS[group].label}</strong>
                     <span>請在固定班別內完成整個療程。</span>
@@ -514,7 +546,7 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
                   <h2>先選一個固定治療時間</h2>
                 </div>
               </div>
-              <p className="flow-copy">已選 {selectedGroup && SCHEDULE_GROUPS[selectedGroup].label}。只顯示可在八週療程窗口內完成整個療程的時間。</p>
+              <p className="flow-copy">已選 {selectedGroup && SCHEDULE_GROUPS[selectedGroup].label}。只顯示可在{patient.monday_only ? `${patient.session_count} 週` : "八週"}療程窗口內完成整個療程的時間。</p>
               <div className="option-list">
                 {timeOptions.map((option) => (
                   <button className="option-card" key={option.time} onClick={() => chooseTime(option.time)} type="button">
@@ -525,7 +557,7 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
               </div>
               {!timeOptions.length && <Notice text="暫時沒有足夠名額完成整個療程，請致電求助。" />}
               <div className="button-row">
-                <button className="ghost-button" onClick={() => setStep("group")} type="button">返回選班別</button>
+                {!patient.monday_only && <button className="ghost-button" onClick={() => setStep("group")} type="button">返回選班別</button>}
               </div>
               <PatientActionRow busy={busy} onRefresh={refreshAvailability} />
             </section>
@@ -551,7 +583,7 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
               </div>
               <div className="button-row">
                 <button className="ghost-button" onClick={() => setStep("time")} type="button">返回選時段</button>
-                <button className="ghost-button" onClick={() => setStep("group")} type="button">返回選班別</button>
+                {!patient.monday_only && <button className="ghost-button" onClick={() => setStep("group")} type="button">返回選班別</button>}
               </div>
               <PatientActionRow busy={busy} onRefresh={refreshAvailability} />
             </section>
@@ -596,7 +628,7 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
               </div>
               <p className="flow-copy">已選 {selectedGroup && SCHEDULE_GROUPS[selectedGroup].label}。選定第一堂後，系統會自動排滿其後 {patient.session_count - 1} 堂。</p>
               <div className="schedule-weekday-headings" aria-hidden="true">
-                {PATIENT_WEEKDAY_HEADERS.map((label) => <span key={label}>{label}</span>)}
+                {(selectedGroup === "M" ? ["星期一"] : PATIENT_WEEKDAY_HEADERS).map((label) => <span key={label}>{label}</span>)}
               </div>
               <div className="date-choice-grid schedule-date-grid">
                 {buildCustomDateGrid(availability, selectedTime, selectedTherapistId, selectedGroup as ScheduleGroup, customStartDates).map((item) => (
@@ -911,9 +943,35 @@ function PatientAdmin({
     session_count: 8,
     custom_session_count: "",
     status: "draft",
+    queue_priority: "normal" as "urgent" | "normal",
+    notification_due_date: "",
+    monday_only: false,
   });
   const [checked, setChecked] = useState<string[]>([]);
-  const drafts = data.patients.filter((patient) => ["draft", "pending"].includes(patient.status));
+  const [queue, setQueue] = useState<Patient[]>([]);
+  const [queuePriority, setQueuePriority] = useState("");
+  const [minWeeks, setMinWeeks] = useState("0");
+  const [createdDate, setCreatedDate] = useState("");
+  const [dueOnly, setDueOnly] = useState(false);
+  const [showReview, setShowReview] = useState(false);
+  const [queueNotice, setQueueNotice] = useState("");
+
+  async function loadQueue() {
+    const params = new URLSearchParams();
+    if (queuePriority) params.set("priority", queuePriority);
+    if (Number(minWeeks) > 0) params.set("minWeeks", minWeeks);
+    if (createdDate) params.set("createdDate", createdDate);
+    if (dueOnly) params.set("dueOnly", "1");
+    try {
+      const result = await api<{ patients: Patient[] }>(`/api/admin/activation-queue?${params}`, { session });
+      setQueue(result.patients ?? []);
+      setChecked((selected) => selected.filter((id) => (result.patients ?? []).some((item) => item.id === id)));
+    } catch (error) {
+      setQueueNotice(errorMessage(error));
+    }
+  }
+
+  useEffect(() => { loadQueue().catch(() => undefined); }, [queuePriority, minWeeks, createdDate, dueOnly, data.patients.length]);
 
   async function savePatient(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -927,10 +985,17 @@ function PatientAdmin({
   }
 
   async function activate() {
-    await api("/api/admin/activate", { method: "POST", session, body: { patientIds: checked } });
-    setChecked([]);
-    setNotice("已開通患者帳號並生成 SMS 模擬紀錄。");
-    await reload(session);
+    try {
+      await api("/api/admin/activate", { method: "POST", session, body: { patientIds: checked } });
+      setChecked([]);
+      setShowReview(false);
+      setQueueNotice("已開通患者帳號並生成 SMS 模擬紀錄。");
+      setNotice("已開通患者帳號並生成 SMS 模擬紀錄。");
+      await reload(session);
+      await loadQueue();
+    } catch (error) {
+      setQueueNotice(errorMessage(error));
+    }
   }
 
   return (
@@ -948,14 +1013,24 @@ function PatientAdmin({
           <label>性別限制<Select value={form.gender_preference} onChange={(value) => setForm({ ...form, gender_preference: value as GenderPreference })} options={[["any", "不限"], ["male", "男治療師"], ["female", "女治療師"]]} /></label>
           <label>堂數<Select value={String(form.session_count)} onChange={(value) => setForm({ ...form, session_count: Number(value), custom_session_count: "" })} options={SESSION_OPTIONS.map((item) => [String(item), `${item} 堂`])} /></label>
           <label>自訂堂數<input inputMode="numeric" value={form.custom_session_count} onChange={(event) => setForm({ ...form, custom_session_count: event.target.value })} placeholder="特別個案才填" /></label>
+          <label>優先級<Select value={form.queue_priority} onChange={(value) => setForm({ ...form, queue_priority: value as "urgent" | "normal", notification_due_date: "" })} options={[["urgent", "緊急：預設等候 2 週"], ["normal", "普通：預設等候 4 週"]]} /></label>
+          <label>預計通知日<input type="date" value={form.notification_due_date} onChange={(event) => setForm({ ...form, notification_due_date: event.target.value })} /></label>
+          <label className="check-inline form-span"><input checked={form.monday_only} onChange={(event) => setForm({ ...form, monday_only: event.target.checked })} type="checkbox" />星期一特別療程：患者只可選星期一，每星期一堂</label>
           <button className="primary-button" type="submit"><Save size={18} />暫存患者</button>
         </form>
       </div>
 
       <div className="panel">
-        <div className="panel-heading"><ClipboardCheck size={22} /><h2>今日暫存清單及二次核對</h2></div>
+        <div className="panel-heading"><ClipboardCheck size={22} /><h2>候選開通清單</h2></div>
+        <div className="form-grid dense queue-filter">
+          <label>優先級<Select value={queuePriority} onChange={setQueuePriority} options={[["", "全部"], ["urgent", "緊急"], ["normal", "普通"]]} /></label>
+          <label>已等待<Select value={minWeeks} onChange={setMinWeeks} options={[["0", "不限"], ["1", "至少 1 週"], ["2", "至少 2 週"], ["4", "至少 4 週"], ["6", "至少 6 週"]]} /></label>
+          <label>某日新增<input type="date" value={createdDate} onChange={(event) => setCreatedDate(event.target.value)} /></label>
+          <label className="check-inline"><input checked={dueOnly} onChange={(event) => setDueOnly(event.target.checked)} type="checkbox" />只看已到通知日</label>
+        </div>
+        {queueNotice && <div className="notice panel-notice">{queueNotice}</div>}
         <div className="review-list">
-          {drafts.map((patient) => (
+          {queue.map((patient) => (
             <label className="check-row" key={patient.id}>
               <input
                 checked={checked.includes(patient.id)}
@@ -964,19 +1039,22 @@ function PatientAdmin({
               />
               <span>
                 <strong>{patient.display_name} {patient.patient_code}</strong>
-                <small>{patient.service_area}/{patient.subtype} · {genderPreferenceText(patient.gender_preference)} · {patient.session_count} 堂 · Dr {patient.doctor_code}</small>
+                <small>{patient.queue_priority === "urgent" ? "緊急" : "普通"} · 已等 {(patient as any).waiting_weeks ?? 0} 週 · 通知日 {patient.notification_due_date || "未設定"}</small>
+                <small>{patient.service_area}/{patient.subtype} · {patient.monday_only ? "星期一特別療程" : genderPreferenceText(patient.gender_preference)} · {patient.session_count} 堂 · Dr {patient.doctor_code}</small>
+                {patient.notification_deferral_reason && <small className="blocked-note">{patient.notification_deferral_reason}</small>}
               </span>
             </label>
           ))}
         </div>
-        <button className="primary-button wide" disabled={!checked.length} onClick={activate} type="button">
-          <ShieldCheck size={18} />
-          二次核對後一鍵開通 {checked.length} 位
-        </button>
-        <DataTable
-          rows={data.patients.slice(0, 12)}
-          columns={[["patient_code", "代號"], ["display_name", "患者"], ["service_area", "類別"], ["subtype", "子類"], ["session_count", "堂數"], ["status", "狀態"]]}
-        />
+        {!queue.length && <small className="muted">目前沒有符合條件的候選患者。</small>}
+        <button className="primary-button wide" disabled={!checked.length} onClick={() => setShowReview(true)} type="button"><ClipboardCheck size={18} />查看二次核對摘要 {checked.length} 位</button>
+        {showReview && (
+          <div className="notice strong-notice">
+            <strong>二次核對：即將發送 SMS 並開通 {checked.length} 位患者。</strong>
+            <small>{queue.filter((patient) => checked.includes(patient.id)).map((patient) => `${patient.patient_code} ${patient.display_name}`).join("、")}</small>
+            <div className="button-row"><button className="ghost-button" onClick={() => setShowReview(false)} type="button">返回勾選</button><button className="primary-button" onClick={activate} type="button"><ShieldCheck size={18} />確認開通並發送 SMS</button></div>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -1033,6 +1111,9 @@ function PatientOverview({ data, session, reload, setNotice }: { data: AdminData
       session_count: patient.session_count,
       custom_session_count: "",
       status: patient.status,
+      queue_priority: patient.queue_priority ?? "normal",
+      notification_due_date: patient.notification_due_date ?? "",
+      monday_only: Boolean(patient.monday_only),
     });
   }
 
@@ -1133,6 +1214,9 @@ function PatientOverview({ data, session, reload, setNotice }: { data: AdminData
               <label>治療子類<Select value={editing.subtype} onChange={(value) => setEditing({ ...editing, subtype: value })} options={SUBTYPES[editing.service_area as ServiceArea].map((item) => [item, item])} /></label>
               <label>性別限制<Select value={editing.gender_preference} onChange={(value) => setEditing({ ...editing, gender_preference: value as GenderPreference })} options={[["any", "不限"], ["male", "男治療師"], ["female", "女治療師"]]} /></label>
               <label>堂數<Select value={String(editing.session_count)} onChange={(value) => setEditing({ ...editing, session_count: Number(value), custom_session_count: "" })} options={SESSION_OPTIONS.map((item) => [String(item), `${item} 堂`])} /></label>
+              <label>優先級<Select value={editing.queue_priority} onChange={(value) => setEditing({ ...editing, queue_priority: value })} options={[["urgent", "緊急"], ["normal", "普通"]]} /></label>
+              <label>預計通知日<input type="date" value={editing.notification_due_date} onChange={(event) => setEditing({ ...editing, notification_due_date: event.target.value })} /></label>
+              <label className="check-inline form-span"><input checked={Boolean(editing.monday_only)} disabled={editing.status === "booked"} onChange={(event) => setEditing({ ...editing, monday_only: event.target.checked })} type="checkbox" />星期一特別療程（每星期一堂）</label>
               {editing.status === "booked" && <div className="notice form-span">此患者已確認療程，治療大類、子類、性別限制和堂數會由後端保持原值。若要改療程條件，請先取消整個療程。</div>}
               <div className="button-row form-span">
                 <button className="primary-button" type="submit"><Save size={18} />保存修改</button>
@@ -1155,7 +1239,9 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
   const [unavailableForm, setUnavailableForm] = useState(() => emptyUnavailableForm(data.therapists[0]?.id ?? "", month));
   const [move, setMove] = useState({ appointmentId: "", therapistId: "", date: "", time: "" });
   const [moveTimes, setMoveTimes] = useState<Array<Record<string, any>>>([]);
-  const [panelNotice, setPanelNotice] = useState({ unavailable: "", capacity: "", reschedule: "", matrix: "" });
+  const [transfer, setTransfer] = useState({ sourceTherapistId: data.therapists[0]?.id ?? "", date: "", startTime: "", endTime: "", reason: "臨時病假" });
+  const [transferPreview, setTransferPreview] = useState<any | null>(null);
+  const [panelNotice, setPanelNotice] = useState({ unavailable: "", capacity: "", reschedule: "", matrix: "", transfer: "" });
 
   async function loadCalendar() {
     const query = new URLSearchParams({ month });
@@ -1270,6 +1356,30 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
       await loadCalendar();
     } catch (error) {
       setPanelNotice((current) => ({ ...current, reschedule: errorMessage(error) }));
+    }
+  }
+
+  async function previewTransfer(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      const result = await api<any>("/api/admin/bulk-transfer/preview", { method: "POST", session, body: transfer });
+      setTransferPreview(result);
+      setPanelNotice((current) => ({ ...current, transfer: result.items?.length ? `已找到 ${result.items.length} 堂受影響預約：可自動轉移 ${result.transferable} 堂，待處理 ${result.unresolved} 堂。` : "指定日期/時段沒有受影響預約。" }));
+    } catch (error) {
+      setPanelNotice((current) => ({ ...current, transfer: errorMessage(error) }));
+    }
+  }
+
+  async function confirmTransfer() {
+    if (!transferPreview || !window.confirm("確認執行批量病假轉移？原治療師的指定範圍會同步設為不可預約。")) return;
+    try {
+      const result = await api<any>("/api/admin/bulk-transfer/confirm", { method: "POST", session, body: transfer });
+      setPanelNotice((current) => ({ ...current, transfer: `已完成批量轉移 ${result.transferred} 堂；${result.unresolved} 堂沒有空位，保留原預約並列為待處理。` }));
+      setTransferPreview(null);
+      await reload(session);
+      await loadCalendar();
+    } catch (error) {
+      setPanelNotice((current) => ({ ...current, transfer: errorMessage(error) }));
     }
   }
 
@@ -1454,6 +1564,20 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
         </div>
       </section>
       <section className="panel">
+        <div className="panel-heading"><RefreshCw size={22} /><h2>批量病假轉移</h2></div>
+        <p className="flow-copy">選擇原治療師與病假範圍後，系統會按同日、同時間、大類、子類、性別限制、可用容量與不可預約時段預覽分配。確認後才正式轉移。</p>
+        {panelNotice.transfer && <div className="notice panel-notice">{panelNotice.transfer}</div>}
+        <form className="form-grid dense" onSubmit={previewTransfer}>
+          <label>原治療師<Select value={transfer.sourceTherapistId} onChange={(value) => setTransfer({ ...transfer, sourceTherapistId: value })} options={data.therapists.map((item) => [item.id, `${item.name} (${item.service_area})`])} /></label>
+          <label>病假日期<input type="date" value={transfer.date} onChange={(event) => setTransfer({ ...transfer, date: event.target.value })} required /></label>
+          <label>開始時間（留空為全日）<Select value={transfer.startTime} onChange={(value) => setTransfer({ ...transfer, startTime: value })} options={[["", "全日"], ...SERVICE_TIMES[(data.therapists.find((item) => item.id === transfer.sourceTherapistId)?.service_area ?? "ELE")].map((time) => [time, time])]} /></label>
+          <label>結束時間（留空為全日）<Select value={transfer.endTime} onChange={(value) => setTransfer({ ...transfer, endTime: value })} options={[["", "全日"], ...SERVICE_TIMES[(data.therapists.find((item) => item.id === transfer.sourceTherapistId)?.service_area ?? "ELE")].map((time) => [time, time])]} /></label>
+          <label className="form-span">病假原因<input value={transfer.reason} onChange={(event) => setTransfer({ ...transfer, reason: event.target.value })} required /></label>
+          <button className="primary-button" type="submit"><RefreshCw size={18} />預覽自動分配</button>
+        </form>
+        {transferPreview && <div className="table-wrap compact-list"><table><thead><tr><th>時間</th><th>患者</th><th>建議轉往</th><th>結果</th></tr></thead><tbody>{transferPreview.items.map((item: any) => <tr key={item.appointmentId}><td>{item.time}</td><td>{item.patientCode} {item.displayName}</td><td>{item.targetTherapistName || "沒有空位"}</td><td>{item.targetTherapistId ? "可轉移" : item.reason}</td></tr>)}</tbody></table><div className="button-row"><button className="primary-button" onClick={confirmTransfer} type="button"><ShieldCheck size={18} />確認批量轉移</button><button className="ghost-button" onClick={() => setTransferPreview(null)} type="button">取消預覽</button></div></div>}
+      </section>
+      <section className="panel">
         <div className="panel-heading matrix-toolbar">
           <div><ClipboardList size={22} /><h2>月度時間表矩陣</h2></div>
           <div className="button-row">
@@ -1479,6 +1603,8 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
 function SettingsAdmin({ data, session, reload, setNotice }: { data: AdminData; session: string; reload: (session?: string) => Promise<void>; setNotice: (value: string) => void }) {
   const [therapist, setTherapist] = useState({ name: "", service_area: "ELE" as ServiceArea, code: "", gender: "unknown" as Gender });
   const [doctor, setDoctor] = useState({ code: "", name: "", quota: 30 });
+  const [holiday, setHoliday] = useState({ date: "", name: "" });
+  const [portalNotice, setPortalNotice] = useState("");
 
   async function saveTherapist(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1500,8 +1626,55 @@ function SettingsAdmin({ data, session, reload, setNotice }: { data: AdminData; 
     await reload(session);
   }
 
+  async function setPortal(state: "open" | "closed" | "auto") {
+    try {
+      const result = await api<PortalStatus>("/api/admin/portal-status", { method: "POST", session, body: { state } });
+      setPortalNotice(`${result.message}${result.manualUntil ? ` 人手設定至 ${new Date(result.manualUntil).toLocaleString("zh-HK")}` : ""}`);
+      await reload(session);
+    } catch (error) {
+      setPortalNotice(errorMessage(error));
+    }
+  }
+
+  async function saveHoliday(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      await api("/api/admin/holidays", { method: "POST", session, body: holiday });
+      setHoliday({ date: "", name: "" });
+      setPortalNotice("公眾假期已保存，前台開放狀態已更新。");
+      await reload(session);
+    } catch (error) {
+      setPortalNotice(errorMessage(error));
+    }
+  }
+
+  async function deleteHoliday(date: string) {
+    if (!window.confirm("刪除此公眾假期？")) return;
+    try {
+      await api(`/api/admin/holidays/${encodeURIComponent(date)}`, { method: "DELETE", session });
+      setPortalNotice("公眾假期已刪除。");
+      await reload(session);
+    } catch (error) {
+      setPortalNotice(errorMessage(error));
+    }
+  }
+
   return (
     <section className="stack">
+      <section className="grid-two">
+        <div className="panel">
+          <div className="panel-heading"><Activity size={22} /><h2>前台網上預約開放</h2></div>
+          <div className={`notice ${data.portal.open ? "portal-open" : ""}`}><strong>{data.portal.open ? "現正開放" : "現已關閉"}</strong><small>{data.portal.message}</small></div>
+          {portalNotice && <div className="notice panel-notice">{portalNotice}</div>}
+          <div className="button-row"><button className="primary-button" onClick={() => setPortal("open")} type="button">立即開放前台</button><button className="danger-button" onClick={() => setPortal("closed")} type="button">立即關閉前台</button><button className="ghost-button" onClick={() => setPortal("auto")} type="button">回復自動時間</button></div>
+          <small className="muted">自動規則：星期一至五 09:00-17:00 開放；週末和公眾假期關閉。人手覆寫會在下一個 09:00 或 17:00 時段邊界失效。</small>
+        </div>
+        <div className="panel">
+          <div className="panel-heading"><CalendarDays size={22} /><h2>公眾假期</h2></div>
+          <form className="form-grid dense" onSubmit={saveHoliday}><label>日期<input type="date" value={holiday.date} onChange={(event) => setHoliday({ ...holiday, date: event.target.value })} required /></label><label>名稱<input value={holiday.name} onChange={(event) => setHoliday({ ...holiday, name: event.target.value })} required /></label><button className="primary-button" type="submit"><Save size={18} />保存假期</button></form>
+          <div className="plain-list compact-list">{data.holidays.length ? data.holidays.map((item) => <div key={item.date}><span><strong>{item.date}</strong><small>{item.name}</small></span><button className="danger-button compact" onClick={() => deleteHoliday(item.date)} type="button">刪除</button></div>) : <small className="muted">未設定公眾假期。</small>}</div>
+        </div>
+      </section>
       <section className="grid-three">
         <div className="panel">
           <div className="panel-heading"><Users size={22} /><h2>治療師</h2></div>
@@ -1896,7 +2069,7 @@ function buildGreedyPlan(choices: Appointment[], sessionCount: number, startAfte
 function canAddAppointment(selected: Appointment[], appointment: Appointment) {
   if (selected.some((item) => item.date === appointment.date)) return false;
   const sameWeek = selected.filter((item) => weekKey(item.date) === weekKey(appointment.date));
-  if (sameWeek.length >= 2) return false;
+  if (sameWeek.length >= (weekdayNumber(appointment.date) === 1 ? 1 : 2)) return false;
   return true;
 }
 
