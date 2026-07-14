@@ -2,7 +2,7 @@ interface Env {
   DB: D1Database;
 }
 
-type ServiceArea = "ELE" | "GYM";
+type ServiceArea = "ELE" | "GYM" | "OT";
 type Gender = "male" | "female" | "unknown";
 type GenderPreference = "any" | "male" | "female";
 
@@ -60,6 +60,7 @@ type ScheduleGroup = keyof typeof SCHEDULE_GROUPS | "M";
 const VALID_SUBTYPES: Record<ServiceArea, string[]> = {
   ELE: ["ELE-1", "ELE-2", "ELE-3"],
   GYM: ["GYM-1", "GYM-1/2", "GYM-3", "GYM-3-1"],
+  OT: ["OT"],
 };
 
 export const onRequest: PagesFunction<Env> = async (context) => {
@@ -1624,7 +1625,7 @@ function daysBetween(left: string, right: string) {
 }
 
 function normalizeServiceArea(value: unknown): ServiceArea | null {
-  return value === "ELE" || value === "GYM" ? value : null;
+  return value === "ELE" || value === "GYM" || value === "OT" ? value : null;
 }
 
 function normalizeGender(value: unknown): Gender {

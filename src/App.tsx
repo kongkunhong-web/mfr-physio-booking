@@ -11,6 +11,7 @@ import {
   LockKeyhole,
   LogIn,
   PhoneCall,
+  Pencil,
   RefreshCw,
   Save,
   Settings,
@@ -23,7 +24,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 
 type Route = "home" | "patient" | "admin";
-type ServiceArea = "ELE" | "GYM";
+type ServiceArea = "ELE" | "GYM" | "OT";
 type Gender = "male" | "female" | "unknown";
 type GenderPreference = "any" | "male" | "female";
 type ScheduleGroup = "A" | "B" | "M";
@@ -171,13 +172,16 @@ const ADMIN_SESSION_KEY = "mfr-admin-session-v2";
 const SUBTYPES: Record<ServiceArea, string[]> = {
   ELE: ["ELE-1", "ELE-2", "ELE-3"],
   GYM: ["GYM-1", "GYM-1/2", "GYM-3", "GYM-3-1"],
+  OT: ["OT"],
 };
+const SERVICE_AREA_OPTIONS: string[][] = [["ELE", "ELE"], ["GYM", "GYM"], ["OT", "OT（職業治療）"]];
 const WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"];
 const SESSION_OPTIONS = Array.from({ length: 7 }, (_, index) => index + 6);
 const WEEKDAY_OPTIONS = [["1", "星期一特別療程"], ["2", "星期二"], ["3", "星期三"], ["4", "星期四"], ["5", "星期五"]];
 const SERVICE_TIMES: Record<ServiceArea, string[]> = {
   ELE: ["08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00", "15:30", "16:00", "16:30", "17:00", "17:30", "18:00", "18:30"],
   GYM: ["08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00", "15:30", "16:00", "16:30", "17:00", "17:30", "18:00", "18:30"],
+  OT: ["08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00", "15:30", "16:00", "16:30", "17:00", "17:30", "18:00", "18:30"],
 };
 const SCHEDULE_GROUPS: Record<ScheduleGroup, { label: string; weekdays: number[] }> = {
   A: { label: "A班：星期三及星期五", weekdays: [3, 5] },
@@ -1008,7 +1012,7 @@ function PatientAdmin({
           <label>身份證<input value={form.id_number} onChange={(event) => setForm({ ...form, id_number: event.target.value })} required /></label>
           <label>電話<input value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} required /></label>
           <label>轉介醫生<Select value={form.doctor_id} onChange={(value) => setForm({ ...form, doctor_id: value })} options={data.doctors.filter((item) => item.active).map((item) => [item.id, `${item.code} ${item.name}`])} /></label>
-          <label>治療大類<Select value={form.service_area} onChange={(value) => setForm({ ...form, service_area: value as ServiceArea, subtype: SUBTYPES[value as ServiceArea][0] })} options={[["ELE", "ELE"], ["GYM", "GYM"]]} /></label>
+          <label>治療大類<Select value={form.service_area} onChange={(value) => setForm({ ...form, service_area: value as ServiceArea, subtype: SUBTYPES[value as ServiceArea][0] })} options={SERVICE_AREA_OPTIONS} /></label>
           <label>治療子類<Select value={form.subtype} onChange={(value) => setForm({ ...form, subtype: value })} options={SUBTYPES[form.service_area].map((item) => [item, item])} /></label>
           <label>性別限制<Select value={form.gender_preference} onChange={(value) => setForm({ ...form, gender_preference: value as GenderPreference })} options={[["any", "不限"], ["male", "男治療師"], ["female", "女治療師"]]} /></label>
           <label>堂數<Select value={String(form.session_count)} onChange={(value) => setForm({ ...form, session_count: Number(value), custom_session_count: "" })} options={SESSION_OPTIONS.map((item) => [String(item), `${item} 堂`])} /></label>
@@ -1154,7 +1158,7 @@ function PatientOverview({ data, session, reload, setNotice }: { data: AdminData
       <div className="panel toolbar-panel filter-bar">
         <label>搜尋患者<input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="代號、姓名、身份證、電話" /></label>
         <label>狀態<Select value={status} onChange={setStatus} options={[["", "全部"], ["draft", "draft"], ["pending", "pending"], ["active", "active"], ["booked", "booked"]]} /></label>
-        <label>大類<Select value={area} onChange={setArea} options={[["", "全部"], ["ELE", "ELE"], ["GYM", "GYM"]]} /></label>
+        <label>大類<Select value={area} onChange={setArea} options={[["", "全部"], ...SERVICE_AREA_OPTIONS]} /></label>
         <label>轉介醫生<Select value={doctorId} onChange={setDoctorId} options={[["", "全部"], ...data.doctors.map((doctor) => [doctor.id, `${doctor.code} ${doctor.name}`])]} /></label>
       </div>
       {(patientLoading || patientNotice) && <div className="notice">{patientLoading ? "正在搜尋患者..." : patientNotice}</div>}
@@ -1210,7 +1214,7 @@ function PatientOverview({ data, session, reload, setNotice }: { data: AdminData
               <label>電話<input value={editing.phone} onChange={(event) => setEditing({ ...editing, phone: event.target.value })} required /></label>
               <label>轉介醫生<Select value={editing.doctor_id} onChange={(value) => setEditing({ ...editing, doctor_id: value })} options={data.doctors.filter((item) => item.active).map((item) => [item.id, `${item.code} ${item.name}`])} /></label>
               <label>狀態<Select value={editing.status} onChange={(value) => setEditing({ ...editing, status: value })} options={[["draft", "draft"], ["pending", "pending"], ["active", "active"], ["booked", "booked"]]} /></label>
-              <label>治療大類<Select value={editing.service_area} onChange={(value) => setEditing({ ...editing, service_area: value as ServiceArea, subtype: SUBTYPES[value as ServiceArea][0] })} options={[["ELE", "ELE"], ["GYM", "GYM"]]} /></label>
+              <label>治療大類<Select value={editing.service_area} onChange={(value) => setEditing({ ...editing, service_area: value as ServiceArea, subtype: SUBTYPES[value as ServiceArea][0] })} options={SERVICE_AREA_OPTIONS} /></label>
               <label>治療子類<Select value={editing.subtype} onChange={(value) => setEditing({ ...editing, subtype: value })} options={SUBTYPES[editing.service_area as ServiceArea].map((item) => [item, item])} /></label>
               <label>性別限制<Select value={editing.gender_preference} onChange={(value) => setEditing({ ...editing, gender_preference: value as GenderPreference })} options={[["any", "不限"], ["male", "男治療師"], ["female", "女治療師"]]} /></label>
               <label>堂數<Select value={String(editing.session_count)} onChange={(value) => setEditing({ ...editing, session_count: Number(value), custom_session_count: "" })} options={SESSION_OPTIONS.map((item) => [String(item), `${item} 堂`])} /></label>
@@ -1533,7 +1537,7 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
           {panelNotice.capacity && <div className="notice panel-notice">{panelNotice.capacity}</div>}
           <form className="form-grid dense" onSubmit={saveCapacity}>
             <label>套用治療師<Select value={capacity.therapist_id} onChange={(value) => setCapacity({ ...capacity, therapist_id: value })} options={[["", "通用容量"], ...data.therapists.map((item) => [item.id, item.name])]} /></label>
-            <label>大類<Select value={capacity.service_area} onChange={(value) => setCapacity({ ...capacity, service_area: value as ServiceArea, subtype: SUBTYPES[value as ServiceArea][0], time: SERVICE_TIMES[value as ServiceArea][0] })} options={[["ELE", "ELE"], ["GYM", "GYM"]]} /></label>
+            <label>大類<Select value={capacity.service_area} onChange={(value) => setCapacity({ ...capacity, service_area: value as ServiceArea, subtype: SUBTYPES[value as ServiceArea][0], time: SERVICE_TIMES[value as ServiceArea][0] })} options={SERVICE_AREA_OPTIONS} /></label>
             <label>子類<Select value={capacity.subtype} onChange={(value) => setCapacity({ ...capacity, subtype: value })} options={SUBTYPES[capacity.service_area].map((item) => [item, item])} /></label>
             <label>星期<Select value={String(capacity.weekday)} onChange={(value) => setCapacity({ ...capacity, weekday: Number(value) })} options={WEEKDAY_OPTIONS} /></label>
             <label>時間<Select value={capacity.time} onChange={(value) => setCapacity({ ...capacity, time: value })} options={SERVICE_TIMES[capacity.service_area].map((time) => [time, time])} /></label>
@@ -1601,22 +1605,24 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
 }
 
 function SettingsAdmin({ data, session, reload, setNotice }: { data: AdminData; session: string; reload: (session?: string) => Promise<void>; setNotice: (value: string) => void }) {
-  const [therapist, setTherapist] = useState({ name: "", service_area: "ELE" as ServiceArea, code: "", gender: "unknown" as Gender });
-  const [doctor, setDoctor] = useState({ code: "", name: "", quota: 30 });
+  const [therapist, setTherapist] = useState({ id: "", name: "", service_area: "ELE" as ServiceArea, code: "", gender: "unknown" as Gender });
+  const [doctor, setDoctor] = useState({ id: "", code: "", name: "", quota: 30 });
   const [holiday, setHoliday] = useState({ date: "", name: "" });
   const [portalNotice, setPortalNotice] = useState("");
 
   async function saveTherapist(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await api("/api/admin/therapists", { method: "POST", session, body: therapist });
-    setNotice("治療師已保存。");
+    setNotice(therapist.id ? "治療師資料已修改。" : "治療師已新增。");
+    setTherapist({ id: "", name: "", service_area: "ELE", code: "", gender: "unknown" });
     await reload(session);
   }
 
   async function saveDoctor(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await api("/api/admin/doctors", { method: "POST", session, body: doctor });
-    setNotice("醫生資料已保存。");
+    setNotice(doctor.id ? "醫生資料及 quota 已修改。" : "醫生已新增。");
+    setDoctor({ id: "", code: "", name: "", quota: 30 });
     await reload(session);
   }
 
@@ -1680,10 +1686,10 @@ function SettingsAdmin({ data, session, reload, setNotice }: { data: AdminData; 
           <div className="panel-heading"><Users size={22} /><h2>治療師</h2></div>
           <form className="form-grid dense" onSubmit={saveTherapist}>
             <label>名稱<input value={therapist.name} onChange={(event) => setTherapist({ ...therapist, name: event.target.value })} /></label>
-            <label>大類<Select value={therapist.service_area} onChange={(value) => setTherapist({ ...therapist, service_area: value as ServiceArea })} options={[["ELE", "ELE"], ["GYM", "GYM"]]} /></label>
+            <label>大類<Select value={therapist.service_area} onChange={(value) => setTherapist({ ...therapist, service_area: value as ServiceArea })} options={SERVICE_AREA_OPTIONS} /></label>
             <label>代號<input value={therapist.code} onChange={(event) => setTherapist({ ...therapist, code: event.target.value })} /></label>
             <label>性別<Select value={therapist.gender} onChange={(value) => setTherapist({ ...therapist, gender: value as Gender })} options={[["unknown", "未設定"], ["male", "男"], ["female", "女"]]} /></label>
-            <button className="primary-button" type="submit"><Save size={18} />保存</button>
+            <div className="button-row"><button className="primary-button" type="submit"><Save size={18} />{therapist.id ? "保存修改" : "新增治療師"}</button>{therapist.id && <button className="ghost-button" onClick={() => setTherapist({ id: "", name: "", service_area: "ELE", code: "", gender: "unknown" })} type="button">取消修改</button>}</div>
           </form>
         </div>
         <div className="panel">
@@ -1692,13 +1698,13 @@ function SettingsAdmin({ data, session, reload, setNotice }: { data: AdminData; 
             <label>代號<input value={doctor.code} onChange={(event) => setDoctor({ ...doctor, code: event.target.value })} /></label>
             <label>名稱<input value={doctor.name} onChange={(event) => setDoctor({ ...doctor, name: event.target.value })} /></label>
             <label>Quota<input inputMode="numeric" value={doctor.quota} onChange={(event) => setDoctor({ ...doctor, quota: Number(event.target.value) })} /></label>
-            <button className="primary-button" type="submit"><Save size={18} />保存</button>
+            <div className="button-row"><button className="primary-button" type="submit"><Save size={18} />{doctor.id ? "保存修改" : "新增醫生"}</button>{doctor.id && <button className="ghost-button" onClick={() => setDoctor({ id: "", code: "", name: "", quota: 30 })} type="button">取消修改</button>}</div>
           </form>
         </div>
       </section>
       <section className="grid-three">
-        <ListPanel title="治療師清單" rows={data.therapists} main="name" sub={(row) => `${row.service_area} · ${genderText(row.gender)} · ${row.active ? "啟用" : "停用"}`} onDelete={(id) => remove("therapists", id)} />
-        <ListPanel title="醫生清單" rows={data.doctors} main="name" sub={(row) => `${row.code} · quota ${row.quota} · ${row.active ? "啟用" : "停用"}`} onDelete={(id) => remove("doctors", id)} />
+        <ListPanel title="治療師清單" rows={data.therapists} main="name" sub={(row) => `${row.service_area} · ${genderText(row.gender)} · ${row.active ? "啟用" : "停用"}`} onEdit={(row) => setTherapist({ id: row.id, name: row.name, service_area: row.service_area, code: row.code, gender: row.gender })} onDelete={(id) => remove("therapists", id)} />
+        <ListPanel title="醫生清單" rows={data.doctors} main="name" sub={(row) => `${row.code} · quota ${row.quota} · ${row.active ? "啟用" : "停用"}`} onEdit={(row) => setDoctor({ id: row.id, code: row.code, name: row.name, quota: Number(row.quota) || 30 })} onDelete={(id) => remove("doctors", id)} />
       </section>
     </section>
   );
@@ -1940,7 +1946,7 @@ async function exportScheduleMatrixExcel({
   downloadBlob(blob, `${safeFileName(therapist.code || therapist.name)}-${month}-月度時間表矩陣.xlsx`);
 }
 
-function ListPanel({ title, rows, main, sub, onDelete }: { title: string; rows: any[]; main: string; sub: (row: any) => string; onDelete: (id: string) => void }) {
+function ListPanel({ title, rows, main, sub, onEdit, onDelete }: { title: string; rows: any[]; main: string; sub: (row: any) => string; onEdit: (row: any) => void; onDelete: (id: string) => void }) {
   return (
     <div className="panel">
       <div className="panel-heading"><ClipboardList size={22} /><h2>{title}</h2></div>
@@ -1951,9 +1957,10 @@ function ListPanel({ title, rows, main, sub, onDelete }: { title: string; rows: 
               <strong>{row[main]}</strong>
               <small>{sub(row)}</small>
             </span>
-            <button className="icon-button" onClick={() => onDelete(row.id)} type="button" aria-label="刪除或停用">
-              <Trash2 size={16} />
-            </button>
+            <div className="inline-actions">
+              <button className="icon-button" onClick={() => onEdit(row)} type="button" aria-label="修改" title="修改"><Pencil size={16} /></button>
+              <button className="icon-button" onClick={() => onDelete(row.id)} type="button" aria-label="刪除或停用" title="刪除或停用"><Trash2 size={16} /></button>
+            </div>
           </div>
         ))}
       </div>
