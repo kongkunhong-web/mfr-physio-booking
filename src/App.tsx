@@ -1033,7 +1033,7 @@ function PatientAdmin({
           <label className="check-inline"><input checked={dueOnly} onChange={(event) => setDueOnly(event.target.checked)} type="checkbox" />只看已到通知日</label>
         </div>
         {queueNotice && <div className="notice panel-notice">{queueNotice}</div>}
-        <div className="review-list">
+        <div className={`review-list ${queue.length > 10 ? "scrollable-vertical" : ""}`}>
           {queue.map((patient) => (
             <label className="check-row" key={patient.id}>
               <input
@@ -1166,7 +1166,7 @@ function PatientOverview({ data, session, reload, setNotice }: { data: AdminData
       <section className="grid-two">
         <div className="panel">
           <div className="panel-heading"><Users size={22} /><h2>患者總覽</h2></div>
-          <div className="table-wrap">
+          <div className={`table-wrap ${rows.length > 10 ? "table-scroll" : ""}`}>
             <table>
               <thead>
                 <tr>
@@ -1514,7 +1514,7 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
           {!therapistId ? (
             <div className="notice">請選擇單一治療師查看清單。</div>
           ) : (
-            <div className="plain-list unavailable-admin-list">
+            <div className={`plain-list unavailable-admin-list ${selectedTherapistUnavailable.length > 10 ? "scrollable-vertical" : ""}`}>
               {selectedTherapistUnavailable.length ? selectedTherapistUnavailable.map((item) => (
                 <div key={item.id}>
                   <span>
@@ -1579,7 +1579,7 @@ function CalendarAdmin({ data, session, reload, setNotice }: { data: AdminData; 
           <label className="form-span">病假原因<input value={transfer.reason} onChange={(event) => setTransfer({ ...transfer, reason: event.target.value })} required /></label>
           <button className="primary-button" type="submit"><RefreshCw size={18} />預覽自動分配</button>
         </form>
-        {transferPreview && <div className="table-wrap compact-list"><table><thead><tr><th>時間</th><th>患者</th><th>建議轉往</th><th>結果</th></tr></thead><tbody>{transferPreview.items.map((item: any) => <tr key={item.appointmentId}><td>{item.time}</td><td>{item.patientCode} {item.displayName}</td><td>{item.targetTherapistName || "沒有空位"}</td><td>{item.targetTherapistId ? "可轉移" : item.reason}</td></tr>)}</tbody></table><div className="button-row"><button className="primary-button" onClick={confirmTransfer} type="button"><ShieldCheck size={18} />確認批量轉移</button><button className="ghost-button" onClick={() => setTransferPreview(null)} type="button">取消預覽</button></div></div>}
+        {transferPreview && <div className={`table-wrap compact-list ${transferPreview.items.length > 10 ? "table-scroll" : ""}`}><table><thead><tr><th>時間</th><th>患者</th><th>建議轉往</th><th>結果</th></tr></thead><tbody>{transferPreview.items.map((item: any) => <tr key={item.appointmentId}><td>{item.time}</td><td>{item.patientCode} {item.displayName}</td><td>{item.targetTherapistName || "沒有空位"}</td><td>{item.targetTherapistId ? "可轉移" : item.reason}</td></tr>)}</tbody></table><div className="button-row"><button className="primary-button" onClick={confirmTransfer} type="button"><ShieldCheck size={18} />確認批量轉移</button><button className="ghost-button" onClick={() => setTransferPreview(null)} type="button">取消預覽</button></div></div>}
       </section>
       <section className="panel">
         <div className="panel-heading matrix-toolbar">
@@ -1678,7 +1678,7 @@ function SettingsAdmin({ data, session, reload, setNotice }: { data: AdminData; 
         <div className="panel">
           <div className="panel-heading"><CalendarDays size={22} /><h2>公眾假期</h2></div>
           <form className="form-grid dense" onSubmit={saveHoliday}><label>日期<input type="date" value={holiday.date} onChange={(event) => setHoliday({ ...holiday, date: event.target.value })} required /></label><label>名稱<input value={holiday.name} onChange={(event) => setHoliday({ ...holiday, name: event.target.value })} required /></label><button className="primary-button" type="submit"><Save size={18} />保存假期</button></form>
-          <div className="plain-list compact-list">{data.holidays.length ? data.holidays.map((item) => <div key={item.date}><span><strong>{item.date}</strong><small>{item.name}</small></span><button className="danger-button compact" onClick={() => deleteHoliday(item.date)} type="button">刪除</button></div>) : <small className="muted">未設定公眾假期。</small>}</div>
+          <div className={`plain-list compact-list ${data.holidays.length > 10 ? "scrollable-vertical" : ""}`}>{data.holidays.length ? data.holidays.map((item) => <div key={item.date}><span><strong>{item.date}</strong><small>{item.name}</small></span><button className="danger-button compact" onClick={() => deleteHoliday(item.date)} type="button">刪除</button></div>) : <small className="muted">未設定公眾假期。</small>}</div>
         </div>
       </section>
       <section className="grid-three">
@@ -1752,7 +1752,7 @@ function Select({ value, onChange, options }: { value: string; onChange: (value:
 
 function DataTable({ rows, columns }: { rows: Array<Record<string, any>>; columns: Array<[string, string]> }) {
   return (
-    <div className="table-wrap">
+    <div className={`table-wrap ${rows.length > 10 ? "table-scroll" : ""}`}>
       <table>
         <thead>
           <tr>{columns.map(([, label]) => <th key={label}>{label}</th>)}</tr>
@@ -1950,8 +1950,8 @@ function ListPanel({ title, rows, main, sub, onEdit, onDelete }: { title: string
   return (
     <div className="panel">
       <div className="panel-heading"><ClipboardList size={22} /><h2>{title}</h2></div>
-      <div className="plain-list">
-        {rows.slice(0, 24).map((row) => (
+      <div className={`plain-list ${rows.length > 10 ? "scrollable-vertical" : ""}`}>
+        {rows.map((row) => (
           <div key={row.id}>
             <span>
               <strong>{row[main]}</strong>

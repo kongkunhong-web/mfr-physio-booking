@@ -556,6 +556,27 @@ select:focus {
   overflow-x: auto;
 }
 
+/* Repeated admin records stay within a readable work area after ten rows. */
+.scrollable-vertical {
+  max-height: min(58vh, 620px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+}
+
+.table-wrap.table-scroll {
+  max-height: min(58vh, 620px);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.table-wrap.table-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  box-shadow: 0 1px 0 #dce8e4;
+}
+
 .patient-grid {
   display: grid;
   gap: 6px;
@@ -956,6 +977,7 @@ td {
 
 .schedule-matrix-wrap {
   max-width: 100%;
+  max-height: min(72vh, 720px);
   overflow: auto;
   border: 1px solid #d7e3df;
   border-radius: 8px;
