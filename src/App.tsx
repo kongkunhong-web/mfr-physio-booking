@@ -838,6 +838,7 @@ function AdminPortal() {
     ["patients", "患者開通", UserPlus],
     ["overview", "患者總覽", Users],
     ["calendar", "月曆排期", CalendarDays],
+    ["year-rollover", "跨年轉更", CalendarDays],
     ["settings", "資料設定", Settings],
     ["logs", "SMS/求助", ClipboardList],
   ] as const;
@@ -868,6 +869,7 @@ function AdminPortal() {
       {tab === "patients" && <PatientAdmin data={data} session={session} reload={load} setNotice={setNotice} />}
       {tab === "overview" && <PatientOverview data={data} session={session} reload={load} setNotice={setNotice} />}
       {tab === "calendar" && <CalendarAdmin data={data} session={session} reload={load} setNotice={setNotice} />}
+      {tab === "year-rollover" && <YearRolloverAdmin />}
       {tab === "settings" && <SettingsAdmin data={data} session={session} reload={load} setNotice={setNotice} />}
       {tab === "logs" && <LogsAdmin data={data} session={session} reload={load} setNotice={setNotice} />}
 
@@ -1609,7 +1611,6 @@ function SettingsAdmin({ data, session, reload, setNotice }: { data: AdminData; 
   const [doctor, setDoctor] = useState({ id: "", code: "", name: "", quota: 30 });
   const [holiday, setHoliday] = useState({ date: "", name: "" });
   const [portalNotice, setPortalNotice] = useState("");
-  const [settingsTab, setSettingsTab] = useState<"general" | "year-rollover">("general");
 
   async function saveTherapist(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1667,13 +1668,7 @@ function SettingsAdmin({ data, session, reload, setNotice }: { data: AdminData; 
   }
 
   return (
-    <section className="settings-layout">
-      <aside className="settings-nav" aria-label="資料設定子分頁">
-        <button className={settingsTab === "general" ? "active" : ""} onClick={() => setSettingsTab("general")} type="button">資料設定</button>
-        <button className={settingsTab === "year-rollover" ? "active" : ""} onClick={() => setSettingsTab("year-rollover")} type="button">跨年轉更</button>
-      </aside>
-      <div className="stack">
-      {settingsTab === "general" && <>
+    <section className="stack">
       <section className="grid-two">
         <div className="panel">
           <div className="panel-heading"><Activity size={22} /><h2>前台網上預約開放</h2></div>
@@ -1713,14 +1708,15 @@ function SettingsAdmin({ data, session, reload, setNotice }: { data: AdminData; 
         <ListPanel title="治療師清單" rows={data.therapists} main="name" sub={(row) => `${row.service_area} · ${genderText(row.gender)} · ${row.active ? "啟用" : "停用"}`} onEdit={(row) => setTherapist({ id: row.id, name: row.name, service_area: row.service_area, code: row.code, gender: row.gender })} onDelete={(id) => remove("therapists", id)} />
         <ListPanel title="醫生清單" rows={data.doctors} main="name" sub={(row) => `${row.code} · quota ${row.quota} · ${row.active ? "啟用" : "停用"}`} onEdit={(row) => setDoctor({ id: row.id, code: row.code, name: row.name, quota: Number(row.quota) || 30 })} onDelete={(id) => remove("doctors", id)} />
       </section>
-      </>}
-      {settingsTab === "year-rollover" && (
-        <section className="panel settings-info-panel">
-          <div className="panel-heading"><CalendarDays size={22} /><div><p className="eyebrow">跨年轉更</p><h2>治療師跨年排更</h2></div></div>
-          <p>用於治療師跨年排更之用。</p>
-        </section>
-      )}
-      </div>
+    </section>
+  );
+}
+
+function YearRolloverAdmin() {
+  return (
+    <section className="panel settings-info-panel">
+      <div className="panel-heading"><CalendarDays size={22} /><div><p className="eyebrow">跨年轉更</p><h2>治療師跨年排更</h2></div></div>
+      <p>用於治療師跨年排更之用。</p>
     </section>
   );
 }
