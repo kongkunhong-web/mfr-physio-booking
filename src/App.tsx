@@ -500,7 +500,7 @@ function PatientPortal({ go }: { go: (route: Route) => void }) {
             {!patient.monday_only && <span>請先選擇 A 班或 B 班。</span>}
             {!patient.monday_only && <span>A 班治療時間為星期三及星期五。</span>}
             {!patient.monday_only && <span>B 班治療時間為星期二及星期四。</span>}
-            {patient.monday_only && <span>此療程已由醫院安排為星期一特別療程，每星期只安排一堂。</span>}
+            {Boolean(patient.monday_only) && <span>此療程已由醫院安排為星期一特別療程，每星期只安排一堂。</span>}
             <span>確認後整個療程會固定同一個時間。</span>
             <span>選堂後如因私人原因缺席，不獲補堂。</span>
             <span>如因病缺席物理治療，請提交政府認可醫院發出的證明，可酌情補堂，整個療程最多可獲兩堂補堂。</span>
