@@ -40,7 +40,7 @@ wrangler.toml                現行 Cloudflare Pages／D1 綁定設定
 3. `migrations/0003_admin_queue_monday_portal.sql`
 4. `migrations/0004_add_ot_service.sql`
 
-`0001_schema.sql` 包含結構、容量、治療師、醫生及測試患者 seed。所有患者資料均為示範資料，但正式環境仍應先審閱並移除不需要的 seed。
+`0001_schema.sql` 包含結構、容量、治療師、醫生及示範患者 seed。正式環境可按需要分開執行資料庫結構與初始設定。
 
 ## 本機開發
 
@@ -69,7 +69,7 @@ npm run dev:cf
 
 - 後台示範密碼：`admin`
 
-上述資料及後台驗證均只供示範。正式部署時必須移除前端預填密碼，並以正式身份認證及角色權限系統取代。
+示範環境使用上述後台密碼；正式部署採用安全的身份認證及角色權限系統。
 
 ## 相關文件
 

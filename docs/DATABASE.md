@@ -32,7 +32,7 @@ npx wrangler@latest d1 migrations apply mfr_physio_booking --local
 npx wrangler@latest d1 migrations apply mfr_physio_booking --remote
 ```
 
-如改用其他資料庫，不應假設可直接執行這些 SQLite migrations。需要建立對應 schema migration，並特別檢查：
+改用其他資料庫時，需要建立對應的 schema migration，並特別檢查：
 
 - `TEXT` 日期／時間欄位的正式型別；
 - `CURRENT_TIMESTAMP`、`date()` 及 SQLite 函數；

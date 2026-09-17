@@ -23,5 +23,4 @@ npm run db:migrate:local
 
 - `npm run build`：通過。
 - 四份 D1 migrations：已在全新本機資料庫依序執行成功。
-- `npm audit --omit=dev`：現有 ExcelJS 依賴鏈回報 1 個 high、2 個 moderate 弱點；自動建議會降級主要套件，因此未盲目套用。正式部署前應重新評估 Excel 匯出方案、鎖定版本及依賴風險。
-- 原始碼沒有 Cloudflare API token、私鑰、`.env` 或資料庫檔案。
+- `npm audit --omit=dev`：現有 ExcelJS 依賴鏈回報 1 個 high、2 個 moderate 弱點。正式部署前應重新評估 Excel 匯出方案、鎖定版本及依賴風險。
